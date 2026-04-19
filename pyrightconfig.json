@@ -1,0 +1,11 @@
+{
+    "include": [
+        "packages/hfao",
+        "apps/cockpit",
+        "scripts",
+        "tests"
+    ],
+    "typeCheckingMode": "strict",
+    "pythonVersion": "3.10",
+    "reportMissingTypeStubs": false
+}
