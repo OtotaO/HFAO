@@ -45,8 +45,12 @@
 
 ### 1.1 Goals
 
-1. **Match LangSmith / Langfuse / Phoenix / Braintrust / Weave / Helicone** on tracing, datasets, evals, prompts, annotation, cost, monitoring.
-2. **Exceed them** on (a) causal failure attribution across multi-agent traces, (b) closed eval-trace loop, (c) MCP-native queryability, (d) HF-ecosystem distribution.
+1. **Match LangSmith / Langfuse / Phoenix / Braintrust / Weave / Helicone** on tracing, datasets, evals, prompts, annotation, cost, and monitoring.
+2. **Exceed them on three pillars commercial competitors cannot easily copy** (per Q-9 resolution, 2026-04-19):
+   - **(a) Standards-nativeness done right** — OTel GenAI \+ OpenInference on ingest, no proprietary wire format, full OTLP compatibility. Commercial vendors hedge this because it commoditizes their backend; HFAO has no reason to hedge.
+   - **(b) MCP-native queryability** — every observability primitive (traces, scores, causal edges, costs, prompts, datasets, experiments) is queryable by any MCP client. The observability backend agents debug themselves with.
+   - **(c) Closed eval-trace loop** — traces become dataset items become evaluator inputs become scores become monitor triggers become traces, in a single system with a single schema, not glued across three SaaS products.
+   Causal attribution and the Experiment primitive (§16 Q-10) are Phase 1 features that live inside these pillars; they are not themselves the pillars.
 3. **Three deployment shapes** from one codebase: single-file HF Space (DuckDB embedded), Docker Compose self-host (ClickHouse), Kubernetes enterprise (ClickHouse Cloud).
 4. **OTel-native ingest from day one** — no proprietary wire format. Accept OTel GenAI experimental \+ OpenInference; emit either on export.
 5. **Single-file elegance where it earns its place** (cockpit, MCP server, ingest worker), conventional engineering everywhere else.
@@ -2051,7 +2055,9 @@ Commit: `feat(cockpit): Gradio 6 single-file UI with MCP export`.
 
 ---
 
-## 11\. Console (SvelteKit, Phase 2\)
+## 11\. Console (SvelteKit, Phase 2 — deferred to v2.0 per Q-11)
+
+**Status.** Per §16 Q-11 (resolved 2026-04-19), the SvelteKit console is **cut from v1.0.0 scope** and returns as a v2.0 milestone, gated on real user demand — specifically, the first user who hits Gradio's 5K-row Dataframe wall. This section stays in SPEC.md as the authoritative reference for that future build; do not implement any of `apps/console/` before v2.0 is greenlit.
 
 **Phase 2\.** Build only after Phase 1 ships and at least one user has hit Gradio's 5K-row Dataframe wall.
 
@@ -2271,8 +2277,8 @@ Three milestones, each ends with a tagged release.
 | Milestone | Tag | Definition of done |
 | :---- | :---- | :---- |
 | **M1 — Walking skeleton** | `v0.1.0` | OTLP ingest works, DuckDB stores traces, cockpit renders a trace, MCP server returns `list_traces` and `get_trace`. Single-binary HF Space deploys. |
-| **M2 — Phase 1 feature parity** | `v0.5.0` | All §1 goals 1–4 covered with Phase 1 scope. Static causal \+ LLM-judge attribution. ClickHouse backend behind a flag. Eval engine offline \+ online. Annotation queues. Cost rollups. Monitors. |
-| **M3 — Phase 2 differentiation** | `v1.0.0` | SvelteKit console. Counterfactual replay for LangGraph \+ OpenAI Agents SDK \+ Claude Agent SDK. DuckLake warm tier sync. Helm chart. Five integration examples shipped. |
+| **M2 — Phase 1 feature parity \+ Experiment primitive** | `v0.5.0` | All §1 goals 1–4 covered with Phase 1 scope. Static causal \+ LLM-judge attribution. ClickHouse backend behind a flag. Eval engine offline \+ online. Annotation queues. Cost rollups. Monitors. **Experiment runner emits Verdicts with paired statistics (§16 Q-10).** `hfao parquet export` CLI for manual warm-tier (§16 Q-13). |
+| **M3 — Phase 2 differentiation** | `v1.0.0` | Counterfactual replay for LangGraph \+ OpenAI Agents SDK \+ Claude Agent SDK. Helm chart. Five integration examples shipped, including the Q-10 prompt bake-off demo. mkdocs-material docs site. README reframed around the Q-9 three pillars. **SvelteKit console deferred to v2.0 per §16 Q-11; DuckLake auto-sync worker deferred to v1.1 per §16 Q-13.** |
 
 ### 15.2 Week-by-week, commit-by-commit
 
@@ -2293,7 +2299,7 @@ Three milestones, each ends with a tagged release.
 - `[F]` `hfao/storage/clickhouse_backend.py` (§4.3 DDL)
 - `[T]` AC §6 ClickHouse rows \+ parity
 
-**Week 3 — ingest**
+**Week 3 — ingest (\+ Q-10 schema once greenlit)**
 
 - `[F]` `hfao/ingest/normalize.py` (§5.6) with OpenInference \+ OTel GenAI mappers
 - `[F]` `hfao/ingest/server.py` (§7.1)
@@ -2301,15 +2307,19 @@ Three milestones, each ends with a tagged release.
 - `[F]` `hfao/ingest/buffer.py` (in-memory \+ Redis)
 - `[T]` AC §5 \+ §7
 - `[F]` body offload (§6.6)
+- `[F]` `hfao/schema/experiments.py` — the four-object family from §16 Q-10a **(gated on Q-10a human review; lands only after the proposal is resolved)**
+- `[T]` AC experiment/variant/pairing/verdict round-trip (gated identically)
 
-**Week 4 — SDK \+ integrations (round 1\)**
+**Week 4 — SDK \+ Tier 1 integrations (round 1\)** *(per Q-12 resolution)*
 
 - `[F]` `hfao/sdk/init.py`, `context.py`, `score.py`, `decorators.py`
 - `[F]` `hfao/instrumentations/langgraph_extra.py`
 - `[F]` `hfao/instrumentations/openai_agents_extra.py`
 - `[F]` `hfao/instrumentations/claude_agent_extra.py`
-- `[T]` AC §12 for: openai, anthropic, langchain, langgraph, openai\_agents, claude\_agent\_sdk
-- `[D]` quickstart for each
+- `[F]` `hfao/instrumentations/transformers_agents_extra.py` (smolagents)
+- `[T]` AC §12 for the four Tier 1 frameworks (LangGraph, OpenAI Agents SDK, Claude Agent SDK, smolagents) \+ auto-OpenInference LLM SDKs (openai / anthropic / mistral / groq / bedrock / vertex / google-genai)
+- `[D]` quickstart per Tier 1 framework
+- **Explicit non-goal:** no Tier 2 integration code this week (see Q-12). Tier 2 is CrewAI, AutoGen, DSPy, LlamaIndex, Haystack, Pydantic AI, Google ADK, AWS Strands, LiteLLM, MCP-as-instrumentation — all deferred to the Week 8 harness.
 
 **Week 5 — cockpit (round 1\)**
 
@@ -2319,7 +2329,7 @@ Three milestones, each ends with a tagged release.
 - `[T]` AC §10 for these tabs
 - 🏷 **TAG `v0.1.0` (M1)**
 
-**Week 6 — cockpit (round 2\) \+ MCP**
+**Week 6 — cockpit (round 2\) \+ MCP \+ auth**
 
 - `[F]` cockpit Datasets \+ Prompts \+ Evals \+ Annotations \+ Monitors \+ Costs \+ Settings \+ Ask HFAO
 - `[F]` `hfao/mcp_server/server.py` \+ `tools.py` \+ `auth.py` (§9)
@@ -2337,38 +2347,35 @@ Three milestones, each ends with a tagged release.
 - `[T]` AC §8 eval subset
 - `[F]` `hfao/compute/cost.py` \+ `monitor.py`
 - `[T]` AC §8 cost \+ monitor
+- `[D]` README \+ marketing copy refreshed to the Q-9 three-pillar framing **before** the v0.5.0 tag lands next week
 
-**Week 8 — integrations (round 2\) \+ warm tier**
+**Week 8 — experiment runner \+ CLI parquet export \+ Tier 2 harness \+ retention** *(per Q-12 / Q-13)*
 
-- `[F]` instrumentations: crewai, smolagents, autogen, dspy, llama\_index, haystack, litellm, mcp
-- `[F]` `hfao/storage/ducklake_warm.py` \+ `parquet_sync.py` (§6.3)
-- `[T]` AC §6 warm tier
+- `[F]` `hfao/compute/eval/runner.py` — executes an `Experiment` across its `Variant`s, emits `ExperimentRun`s, computes `Verdict`s. This is what makes HFAO genuinely better than Langfuse/Braintrust for comparative study (per Q-9 positioning).
+- `[F]` `hfao/cli.py` — `hfao parquet export <from> <to> --hf-bucket <url>` one-shot command (per Q-13). `storage/parquet_sync.py` stays empty for v1.1.
+- `[T]` Tier 2 test harness: a shared fixture that asserts any community-contributed instrumentor produces canonical traces. Not per-framework AC; one generic harness.
 - `[F]` retention worker (§6.4)
 - 🏷 **TAG `v0.5.0` (M2)**
 
-**Week 9–10 — console (Phase 2\)**
-
-- `[F]` `apps/console/` SvelteKit scaffold
-- `[F]` Traces 100k-row TanStack Table with URL state
-- `[F]` DAG view with Svelte Flow \+ causal overlay
-- `[F]` SQL playground
-- `[T]` AC §11
-
-**Week 11 — counterfactual replay (Phase 2\)**
+**Weeks 9–10 — counterfactual replay \+ examples** *(replaces the former SvelteKit console weeks per Q-11)*
 
 - `[F]` `hfao/compute/causal/counterfactual.py`
 - `[F]` LangGraph replay driver
 - `[F]` OpenAI Agents SDK replay driver
 - `[F]` Claude Agent SDK replay driver
 - `[T]` AC §8 counterfactual extension
+- `[D]` `examples/multi-framework-a2a/` — the marquee causal demo
+- `[D]` `examples/experiment-prompt-bake-off/` — the marquee Q-10 demo (HFAO's answer to "can I A/B prompts like Braintrust"; answer: yes, and with paired statistics)
 
-**Week 12 — examples \+ Helm \+ polish**
+**Week 11 — docs \+ polish \+ Helm** *(replaces weeks 11–12 consolidated)*
 
-- `[D]` `examples/multi-framework-a2a/` (the marquee causal demo)
+- `[D]` mkdocs-material docs site (per §16 Q-7 default)
 - `[I]` Helm chart
 - `[I]` HF Space one-click deploy workflow
-- `[D]` README \+ docs site (mkdocs)
+- `[D]` README rewritten around the Q-9 three-pillar framing
 - 🏷 **TAG `v1.0.0` (M3)**
+
+**Net effect of the Q-9/Q-11/Q-12/Q-13/Q-14 rebalance.** v1.0.0 ships one week earlier (week 11 vs. the original week 12), without the SvelteKit console, with sharper positioning, and with the Experiment schema as the library-level hook that makes HFAO genuinely differentiated for comparative study. §11 (console) stays in this document as deferred-scope v2.0 reference, gated on the first user who actually hits Gradio's 5K-row wall.
 
 ### 15.3 Hard rules for Claude Code execution
 
