@@ -2517,6 +2517,56 @@ class ExperimentRun(Struct, kw_only=True):
 2. Should `Verdict` support multiple evaluators in one object, or one-Verdict-per-evaluator as drafted?
 3. Do we need a separate `ExperimentDefinition` (pre-run, immutable contract) vs. `Experiment` (runtime state), or is one object enough?
 
+#### 16.2.1 Rationale for the four-object family
+
+Each object in the family pulls distinct weight; collapsing any pair produces measurably worse ergonomics or breaks the paired-statistics property that makes this useful for small-n LLM evals.
+
+- **`Variant` as a first-class object** (not a tag on a run): a variant is the unit users configure, talk about, and iterate on. If we stored it as `metadata["variant"] = "haiku"`, we'd lose (a) the axis taxonomy, (b) `config_hash` for duplicate-detection across experiments, and (c) the invariant that every run in an experiment resolves to exactly one variant. Making it a Struct lets the runner validate those invariants once, at the boundary.
+- **`Pairing` as its own object** (not inferred): the whole point is the *paired* comparison — same task, same seed, different variant. If pairings were reconstructed from tags, any runtime mismatch between variants (retries, skips, partial failures) would silently poison the statistics. An explicit `Pairing.run_ids_by_variant` map makes mis-pairing a schema error, not a silent data bug.
+- **`Verdict` separate from `Experiment`**: an experiment has one intent; it can have many verdicts. You re-run verdicts when you add a new evaluator, change the paired test, or re-weight. Keeping verdicts as their own append-only object preserves the audit trail that "yesterday's ranking used Wilcoxon at α=0.05; today's uses paired-t at α=0.1" — a property users will ask for the first time a ranking flips.
+- **`ExperimentRun` as a thin join**: one trace, one experiment context. Without it, the trace table would carry nullable experiment/variant/pairing columns forever. The join stays in control plane (Postgres/SQLite); the trace table stays clean.
+
+#### 16.2.2 Drafting question analysis
+
+**(1) `config_hash` — SHA256 of canonical JSON vs. content-addressable store reference.**
+
+- *Option A — SHA256 of canonical JSON.* Simple, deterministic, no new service. Two variants are "the same" iff their config serializes to the same canonical JSON (sorted keys, no insignificant whitespace). Pros: no dependencies, reproducible across backends, trivial to compute in the SDK. Cons: the *contents* of large prompt configs bloat the `config` dict on every variant; a large system prompt is re-stored on every run.
+- *Option B — content-addressable store reference.* `config_hash` points into `hfao-bodies` (or a sibling `hfao-configs` store); `config` becomes a reference and the full blob is fetched on demand. Pros: deduplicates large configs; aligns with the §6.6 body offload story. Cons: adds a store dependency to the eval flow, and introduces a new failure mode where a variant's config is deleted by retention while the experiment is still active.
+- *Recommendation (pending review).* Option A for v1.0.0. Option B can be layered on later by making `config_hash` a URI prefix (`sha256:...` in v1.0.0, `content://...` in a hypothetical v1.2) without a breaking change. Users with giant prompts can still use the §6.6 body offload on the prompt registry side.
+
+**(2) `Verdict` — single multi-evaluator object vs. one-per-evaluator.**
+
+- *Option A — one Verdict per evaluator (as drafted).* Simple, composable. A `compare_runs` MCP tool or a UI table naturally iterates a list of Verdicts. Pros: clear unit of computation, clean append-only log. Cons: callers wanting the "for each variant, show mean-per-evaluator" matrix must join N Verdicts client-side.
+- *Option B — single Verdict carrying a dict-of-evaluators.* The whole matrix is one object; clients render it directly. Pros: one network fetch for the full matrix. Cons: partial re-runs are awkward (you either append a new Verdict object or mutate the existing one, and the latter breaks audit-ability).
+- *Recommendation (pending review).* Option A — keep the one-Verdict-per-evaluator shape. Add a thin aggregation helper (`verdict_matrix(experiment_id) -> dict[evaluator, Verdict]`) in the runner if the matrix view is frequent. The audit-trail argument is decisive: flipping a ranking when you change the paired test must be visible in the log, and Option B hides it behind a mutation.
+
+**(3) `ExperimentDefinition` (immutable contract) vs. `Experiment` (runtime state) — one object or two?**
+
+- *Option A — one `Experiment` object holding both.* What the draft shows. Fields like `status`, `finished_at`, `created_at` mix with `variants`, `held_constant`. Pros: one object to fetch, one table to query. Cons: the definition-vs-state split is blurred; if a user edits `description` or `variants` after launch, audit is fuzzy.
+- *Option B — separate `ExperimentDefinition` + `ExperimentRun` (keep current `Experiment` as the state object).* A definition is immutable after launch; state is mutable. Pros: clean contract separation, aligns with the "prompt_versions are immutable, prompt_labels are mutable" pattern we've already committed to (§4.1 PromptVersion/PromptLabel).
+- *Recommendation (pending review).* Option B. The Prompt object family already pays the cost of separating immutable content from mutable pointers, and users who've internalized that pattern will expect the same shape for experiments. Concretely: `ExperimentDefinition` holds `name`, `description`, `dataset_id`, `evaluator_ids`, `variants`, `held_constant`, `planned_runs_per_variant`, `created_by`, `created_at`. `Experiment` holds `project_id`, `id`, `definition_id` (FK), `status`, `started_at`, `finished_at`. `description` edits produce new definition versions, mirroring `PromptVersion`.
+
+#### 16.2.3 Integration surface (preview)
+
+Not part of Q-10a itself, but to help reviewers see the downstream cost:
+
+- **CLI.** `hfao experiment create --config experiment.yaml`, `hfao experiment run <id>`, `hfao experiment verdict <id>`. The YAML contract freezes on the definition object.
+- **MCP tools (§9.2 extension).** `list_experiments(project)`, `get_experiment(id)`, `get_verdict(experiment_id, evaluator)`, `compare_variants(experiment_id)`. All read-only; a write tool (`create_experiment`) stays gated by `HFAO_MCP_READ_ONLY`.
+- **Cockpit / console.** One new "Experiments" tab. Experiment list → detail (variants table, pairings count, latest verdicts per evaluator). Verdict detail view renders confidence intervals as a forest plot via `gr.HTML` scoped CSS (cockpit) or Svelte Flow (console, when it returns in v2.0).
+- **CI gate.** `hfao eval run --experiment <id> --gate "verdict.ranking[0] == 'baseline' OR verdict.p_value > 0.05"` exits non-zero when the challenger wins at the configured significance. This composes with §8.2's existing `--gate` flag shape.
+- **Storage.** New DDL for `experiments`, `experiment_definitions`, `variants`, `pairings`, `verdicts`, `experiment_runs` in both `storage/ddl/duckdb.sql` and `clickhouse.sql`. Partitioning/PK strategy identical to `events` (project_id-leading, ORDER BY on the ID). No change to hot-path ingest.
+
+#### 16.2.4 AC test sketch (for when Q-10a lands in §4)
+
+Following §4.6's pattern, a `test_ac_4_experiments.py` would cover:
+
+- `test_experiment_definition_immutable_after_launch` — edits produce a new version, old version still fetchable.
+- `test_pairing_invariant_one_run_per_variant` — schema-level check that `run_ids_by_variant.keys()` equals the experiment's variant ids.
+- `test_verdict_paired_test_bootstrap_ci` — Wilcoxon paired + percentile bootstrap CI against a fixture with a known truth.
+- `test_verdict_p_value_monotonic_with_n` — increasing n narrows CI, lowers p-value (sanity only, not a formal statistical test).
+- `test_experiment_run_links_trace_to_variant` — `ExperimentRun(trace_id=T)` is reachable from `get_trace` via a metadata path.
+- `test_cross_backend_parity_experiments` — same as §6.7 parity, scoped to the experiment tables.
+
 ---
 
 ## Appendix A — environment variables
