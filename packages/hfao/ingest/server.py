@@ -26,6 +26,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from hfao.config import HFAOConfig
+from hfao.ingest.body_offload import BodyOffloader, LocalBodyStore
 from hfao.ingest.buffer import IngestBuffer, make_buffer
 from hfao.ingest.normalize import normalize, normalize_scores
 from hfao.ingest.otlp_http import parse_logs, parse_traces
@@ -88,15 +89,24 @@ def create_app(
     buffer: IngestBuffer,
     config: HFAOConfig,
     redactor: Redactor | None = None,
+    body_offloader: BodyOffloader | None = None,
 ) -> Starlette:
     redactor = redactor or Redactor()
+    body_offloader = body_offloader or BodyOffloader(
+        LocalBodyStore(config.bodies_path),
+        threshold_bytes=config.body_offload_threshold_bytes,
+    )
 
     async def health(_: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
     async def v1_traces(request: Request) -> Response:
         return await _handle_traces(
-            request, buffer=buffer, config=config, redactor=redactor
+            request,
+            buffer=buffer,
+            config=config,
+            redactor=redactor,
+            body_offloader=body_offloader,
         )
 
     async def v1_logs(request: Request) -> Response:
@@ -124,6 +134,7 @@ async def _handle_traces(
     buffer: IngestBuffer,
     config: HFAOConfig,
     redactor: Redactor,
+    body_offloader: BodyOffloader,
 ) -> Response:
     if buffer.near_full():
         return JSONResponse(
@@ -146,7 +157,8 @@ async def _handle_traces(
     scores: list[Score] = []
     for sp in spans:
         for obs in normalize(sp, default_project_id=config.project):
-            observations.append(redactor.redact_observation(obs))
+            redacted = redactor.redact_observation(obs)
+            observations.append(body_offloader.offload(redacted))
         scores.extend(normalize_scores(sp))
     buffer.put(observations, scores)
     return JSONResponse({"accepted": len(observations)})
