@@ -30,6 +30,7 @@ from starlette.routing import Route
 from hfao.config import HFAOConfig
 from hfao.ingest.normalize import normalize, normalize_scores
 from hfao.ingest.otlp_http import parse_logs, parse_traces
+from hfao.ingest.redact import Redactor
 from hfao.schema.events import Observation
 from hfao.schema.otlp import Span, SpanEvent
 from hfao.schema.scores import Score
@@ -145,16 +146,25 @@ def create_app(
     backend: StorageBackend,
     buffer: IngestBuffer,
     config: HFAOConfig,
+    redactor: Redactor | None = None,
 ) -> Starlette:
+    redactor = redactor or Redactor()
+
     async def health(_: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
     async def v1_traces(request: Request) -> Response:
-        return await _handle_traces(request, buffer=buffer, config=config)
+        return await _handle_traces(
+            request, buffer=buffer, config=config, redactor=redactor
+        )
 
     async def v1_logs(request: Request) -> Response:
         return await _handle_logs(
-            request, backend=backend, buffer=buffer, config=config
+            request,
+            backend=backend,
+            buffer=buffer,
+            config=config,
+            redactor=redactor,
         )
 
     return Starlette(
@@ -168,7 +178,11 @@ def create_app(
 
 
 async def _handle_traces(
-    request: Request, *, buffer: IngestBuffer, config: HFAOConfig
+    request: Request,
+    *,
+    buffer: IngestBuffer,
+    config: HFAOConfig,
+    redactor: Redactor,
 ) -> Response:
     if buffer.near_full():
         return JSONResponse(
@@ -190,7 +204,8 @@ async def _handle_traces(
     observations: list[Observation] = []
     scores: list[Score] = []
     for sp in spans:
-        observations.extend(normalize(sp, default_project_id=config.project))
+        for obs in normalize(sp, default_project_id=config.project):
+            observations.append(redactor.redact_observation(obs))
         scores.extend(normalize_scores(sp))
     buffer.put(observations, scores)
     return JSONResponse({"accepted": len(observations)})
@@ -202,8 +217,10 @@ async def _handle_logs(
     backend: StorageBackend,
     buffer: IngestBuffer,
     config: HFAOConfig,
+    redactor: Redactor,
 ) -> Response:
     _ = backend  # reserved: log-to-score merging will hit backend directly
+    _ = redactor  # log scores carry no bodies, but the param keeps parity
     if buffer.near_full():
         return JSONResponse(
             {"error": "buffer near full"},
