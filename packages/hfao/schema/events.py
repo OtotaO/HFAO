@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, cast
 
 from msgspec import Struct, field
 
@@ -106,6 +106,3 @@ class Observation(Struct, kw_only=True):
     # Bookkeeping
     event_version: int = 1
     ingested_at: datetime
-
-
-from typing import cast
