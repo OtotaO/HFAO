@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-
 from hfao.schema.causal import CausalEdge
 from hfao.schema.events import (
     CostBreakdown,
@@ -43,7 +42,7 @@ def _obs(
     obs_type: ObservationType = "GENERATION",
     start_offset: int = 0,
     total_tokens: int = 30,
-    input: str | None = None,
+    input: str | None = None,  # noqa: A002 — matches SPEC §4.1 Observation.input
     output: str | None = None,
     tool_calls: list[ToolCall] | None = None,
 ) -> Observation:

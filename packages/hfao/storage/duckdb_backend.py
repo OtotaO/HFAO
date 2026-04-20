@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 import re
 import threading
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import duckdb
 import msgspec
@@ -80,7 +81,7 @@ class DuckDBBackend:
             )
             cols = [d[0] for d in cur.description]
             rows = cur.fetchall()
-        return [_row_to_observation(dict(zip(cols, r))) for r in rows]
+        return [_row_to_observation(dict(zip(cols, r, strict=True))) for r in rows]
 
     def list_traces(
         self,
@@ -110,7 +111,7 @@ class DuckDBBackend:
         with self._lock:
             cur = self._con.execute(sql, [project_id, limit, offset])
             cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, r)) for r in cur.fetchall()]
+            return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
 
     def search_traces_text(
         self, project_id: str, query: str, limit: int = 50
@@ -127,7 +128,7 @@ class DuckDBBackend:
         with self._lock:
             cur = self._con.execute(sql, [project_id, like, like, like, limit])
             cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, r)) for r in cur.fetchall()]
+            return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
 
     def get_causal_edges(self, project_id: str, trace_id: str) -> list[CausalEdge]:
         with self._lock:
@@ -151,7 +152,7 @@ class DuckDBBackend:
                 judge_model=r["judge_model"],
                 computed_at=r["computed_at"],
             )
-            for r in (dict(zip(cols, row)) for row in rows)
+            for r in (dict(zip(cols, row, strict=True)) for row in rows)
         ]
 
     def get_scores(self, project_id: str, trace_id: str) -> list[Score]:
@@ -164,7 +165,7 @@ class DuckDBBackend:
             rows = cur.fetchall()
         out: list[Score] = []
         for row in rows:
-            r = dict(zip(cols, row))
+            r = dict(zip(cols, row, strict=True))
             out.append(
                 Score(
                     project_id=r["project_id"],
@@ -211,7 +212,7 @@ class DuckDBBackend:
         with self._lock:
             cur = self._con.execute(sql, [project_id, date_from.date(), date_to.date()])
             cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, r)) for r in cur.fetchall()]
+            return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
 
     def execute_readonly_sql(self, project_id: str, sql: str) -> list[dict[str, Any]]:
         _assert_read_only(sql)
@@ -219,7 +220,7 @@ class DuckDBBackend:
         with self._lock:
             cur = self._con.execute(scoped)
             cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, r)) for r in cur.fetchall()]
+            return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
 
 
 def _assert_where_fragment(where_sql: str) -> None:

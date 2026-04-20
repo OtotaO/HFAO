@@ -7,8 +7,9 @@ allowed outside this package (Appendix C rule 4).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Iterable, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from hfao.schema.causal import CausalEdge
 from hfao.schema.events import Observation

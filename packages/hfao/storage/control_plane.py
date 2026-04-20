@@ -278,7 +278,7 @@ class ControlPlane:
         *,
         project_id: str,
         name: str,
-        type: str,
+        type: str,  # noqa: A002 — matches SPEC §4.1 PromptVersion.type
         content: str,
         config: str = "{}",
         created_by: str,

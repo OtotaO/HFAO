@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import re
 import threading
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from urllib.parse import urlparse
 
 import msgspec
@@ -123,7 +124,7 @@ class ClickHouseBackend:
 
         self._dsn = dsn
         self._lock = threading.RLock()
-        params = _parse_dsn(dsn)
+        params = parse_dsn(dsn)
         self._database: str = str(params["database"])
         # clickhouse-connect stubs leave **kwargs as Unknown; widen here.
         self._client = clickhouse_connect.get_client(  # pyright: ignore[reportUnknownMemberType]
@@ -178,7 +179,7 @@ class ClickHouseBackend:
         with self._lock:
             res = self._client.query(sql, parameters={"p": project_id, "t": trace_id})
         cols = list(res.column_names)
-        return [_row_to_observation(dict(zip(cols, r))) for r in res.result_rows]
+        return [_row_to_observation(dict(zip(cols, r, strict=True))) for r in res.result_rows]
 
     def list_traces(
         self,
@@ -210,7 +211,7 @@ class ClickHouseBackend:
         cols = list(res.column_names)
         out: list[dict[str, Any]] = []
         for r in res.result_rows:
-            d = dict(zip(cols, r))
+            d = dict(zip(cols, r, strict=True))
             d["has_error"] = bool(d.get("has_error", 0))
             out.append(d)
         return out
@@ -233,7 +234,7 @@ class ClickHouseBackend:
                 sql, parameters={"p": project_id, "q": query, "limit": limit}
             )
         cols = list(res.column_names)
-        return [dict(zip(cols, r)) for r in res.result_rows]
+        return [dict(zip(cols, r, strict=True)) for r in res.result_rows]
 
     def get_causal_edges(self, project_id: str, trace_id: str) -> list[CausalEdge]:
         sql = (
@@ -245,7 +246,7 @@ class ClickHouseBackend:
         cols = list(res.column_names)
         out: list[CausalEdge] = []
         for row in res.result_rows:
-            r = dict(zip(cols, row))
+            r = dict(zip(cols, row, strict=True))
             out.append(
                 CausalEdge(
                     project_id=r["project_id"],
@@ -273,7 +274,7 @@ class ClickHouseBackend:
         cols = list(res.column_names)
         out: list[Score] = []
         for row in res.result_rows:
-            r = dict(zip(cols, row))
+            r = dict(zip(cols, row, strict=True))
             out.append(
                 Score(
                     project_id=r["project_id"],
@@ -326,7 +327,7 @@ class ClickHouseBackend:
                 },
             )
         cols = list(res.column_names)
-        return [dict(zip(cols, r)) for r in res.result_rows]
+        return [dict(zip(cols, r, strict=True)) for r in res.result_rows]
 
     def execute_readonly_sql(self, project_id: str, sql: str) -> list[dict[str, Any]]:
         _assert_read_only(sql)
@@ -334,10 +335,10 @@ class ClickHouseBackend:
         with self._lock:
             res = self._client.query(scoped)
         cols = list(res.column_names)
-        return [dict(zip(cols, r)) for r in res.result_rows]
+        return [dict(zip(cols, r, strict=True)) for r in res.result_rows]
 
 
-def _parse_dsn(dsn: str) -> dict[str, Any]:
+def parse_dsn(dsn: str) -> dict[str, Any]:
     parsed = urlparse(dsn)
     scheme = parsed.scheme.lower()
     if scheme not in {"clickhouse", "clickhouses", "http", "https"}:
@@ -541,4 +542,4 @@ def _row_to_observation(r: dict[str, Any]) -> Observation:
     )
 
 
-__all__ = ["ClickHouseBackend"]
+__all__ = ["ClickHouseBackend", "parse_dsn"]
