@@ -2394,8 +2394,128 @@ Three milestones, each ends with a tagged release.
 | Q-6 | Default body offload destination in single-binary shape — local FS or embedded MinIO? | Local FS (simpler; MinIO adds a dep) | Week 2 |
 | Q-7 | Docs site generator — mkdocs-material, Docusaurus, or Mintlify? | mkdocs-material | Week 12 |
 | Q-8 | Telemetry-on-HFAO (anonymous usage stats from self-hosters) — opt-in, opt-out, or none? | Opt-in only; none in v1 | Pre-launch |
+| Q-9 | Should §1.1 pillars be reframed to demote causal attribution from differentiator to feature, with standards-nativeness \+ MCP-native queryability \+ closed eval-trace loop as the three pillars? | Yes, reframe. Causal attribution remains a Phase 1 feature with identical code scope; positioning changes only. | Before week 3 |
+| Q-10 | Add an Experiment / Variant / Pairing / Verdict object family to §4.1 as the primitive for systematic comparison — usable by HFAO eval CLI, CI gates, prompt A/Bs, model bake-offs, and external consumers (e.g. AgentXAgent) doing tournament orchestration? | Yes, but draft the full schema as a §16 proposal first (Q-10a below); do not merge to §4 until the shape is reviewed. The 40-line version initially proposed is insufficient — it lacks variant/pairing/verdict semantics that make the object uniquely useful vs. just tagging traces. | Before week 4 |
+| Q-10a | What is the exact Experiment schema? | See draft below in §16 proposal block. Claude Code to iterate the draft as a `docs(spec): Q-10 experiment schema proposal` commit; human reviews before §4 gets touched. | Before week 4 |
+| Q-11 | Cut SvelteKit console from v1.0.0 scope. Phase 1 / v1.0.0 ships Gradio-only. Console returns as v2.0, gated on real user demand (first user hits Gradio 5K-row wall). | Yes, cut. Frees weeks 9–10 of §15.2. §11 stays in SPEC as deferred-scope reference. | Before week 9 |
+| Q-12 | Tier the §12.2 framework matrix. Tier 1 (v1.0.0 acceptance-bulletproof): LangGraph, OpenAI Agents SDK, Claude Agent SDK, smolagents, plus auto-OpenInference coverage for raw LLM SDKs (openai/anthropic/mistral/groq/bedrock/vertex/google-genai). Tier 2 (documented integration point \+ test harness only, not v1 AC): CrewAI, AutoGen, DSPy, LlamaIndex, Haystack, Pydantic AI, Google ADK, AWS Strands, LiteLLM, MCP-as-instrumentation. | Yes, tier. Axes: Tier 1 covers replay-supported ×3 \+ HF-native ×1. Tier 2 gets community-contribution path with the test harness §12 already mandates. | Before week 4 |
+| Q-13 | Defer DuckLake auto-sync worker to v1.1. Ship `hfao parquet export <date-range> --to <hf-bucket>` CLI in v1.0.0 as the manual warm-tier path. Keep §4.4 partition-path conventions exactly as specified. | Yes. Cut `storage/parquet_sync.py` scheduled worker from week 8; implement `hfao parquet export` in `cli.py` as a one-shot command. Conventions in §4.4 stay — they cost nothing and preserve forward compatibility with auto-sync in v1.1. | Before week 8 |
+| Q-14 | Architectural separation: HFAO ships as the open-source observability library / deployable; AgentXAgent (the arena platform) lives in a separate repository and imports `hfao` as a dependency. No arena-specific code, schema, or UI lives in this repo. | Yes. HFAO stays a general-purpose observatory. AgentXAgent becomes the marquee demo that proves HFAO is the substrate — the same playbook Langfuse/Supabase/Vercel ran with library-plus-product. | Before v1.0.0 launch narrative is written |
 
 **Claude Code instruction.** If an answer arrives, append it to §16 with a date stamp and a one-line rationale. Do not modify the table inline; preserve the original questions for audit.
+
+### 16.1 Resolutions (append-only, per §16 instruction)
+
+- **Q-9 resolved (2026-04-19)** — Yes, reframe. Standards-native ingest, MCP-native queryability, and the closed eval-trace loop are the three pillars. Causal attribution remains in Phase 1 with unchanged code scope and honest "hypotheses not verdicts" framing. *Rationale:* Stage 1 is table stakes, Stage 3 is easily copied, Stage 2 only covers three frameworks — the combo is good but not moat-grade. The three adopted pillars are each architecturally hard for commercial competitors to copy (LangSmith/Braintrust have business reasons not to ship clean MCP or abandon proprietary wire formats).
+- **Q-10 resolved in principle; Q-10a pending (2026-04-19)** — Yes to the object family; no commit to §4 until Q-10a draft is reviewed. Claude Code to produce `docs(spec): Q-10 experiment schema proposal` next, containing the full Experiment/Variant/Pairing/Verdict Structs with rationale, drawing from the draft block in §16.2 below. Human reviews, iterates if needed, then greenlights the §4 commit.
+- **Q-11 resolved (2026-04-19)** — Cut from v1.0.0. §11 stays in SPEC as v2.0 deferred scope. Weeks 9–10 of §15.2 freed; see §15 re-plan in the same commit that lands this resolution.
+- **Q-12 resolved (2026-04-19)** — Tier as proposed. Tier 1 integrations get full per-framework AC tests in `test_ac_12_integrations.py`. Tier 2 gets the shared test harness only and a `CONTRIBUTING.md` path for community PRs.
+- **Q-13 resolved (2026-04-19)** — Defer auto-sync; ship CLI export. `storage/parquet_sync.py` stays as an empty file for v1.1. §4.4 partition conventions untouched.
+- **Q-14 resolved (2026-04-19)** — Separate repos. AgentXAgent is not an HFAO concern. The Experiment schema (Q-10) is the clean library-level primitive that lets external consumers including AgentXAgent build arena/tournament logic on top without HFAO carrying arena assumptions. Rationale mirrors the Langfuse/Supabase/Vercel pattern: library stays general, product stays focused, each benefits from the other without coupling.
+
+### 16.2 Q-10a draft — Experiment schema proposal block
+
+The following is a **proposal**, not yet merged into §4. Claude Code must land this as its own `docs(spec): Q-10 experiment schema proposal` commit and wait for human review before touching `packages/hfao/schema/` or §4.1.
+
+```python
+# Proposed additions to packages/hfao/schema/experiments.py
+# Pending Q-10a review. Do not implement until resolved.
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal, cast
+
+from msgspec import Struct, field
+
+
+# An Experiment groups runs that share a task definition and a set of varied
+# axes. It is the unit of systematic comparison: CI gates, prompt A/Bs, model
+# bake-offs, and externally, tournament rounds.
+#
+# Design principles:
+#   - held-constant vs. varied is explicit, not inferred from tags
+#   - variants are first-class, not just metadata on runs
+#   - pairings support proper paired statistics (same task + seed across variants)
+#   - verdicts carry confidence intervals, not just means — n is usually small
+#   - the experiment itself is replayable; individual run replay is in §8.1
+
+VariantAxis = Literal[
+    "prompt", "model", "tools", "topology", "agent_config", "system_prompt", "other"
+]
+
+ExperimentStatus = Literal["pending", "running", "complete", "aborted"]
+
+
+class Variant(Struct, kw_only=True):
+    """One side of a comparison. Multiple variants per experiment."""
+    id: str                              # stable within experiment
+    name: str                            # human label, e.g. "haiku-with-tools"
+    axis: VariantAxis                    # what this variant changes
+    config_hash: str                     # SHA256 of the variant's full config
+    config: dict[str, str] = field(default_factory=lambda: cast(dict[str, str], {}))
+
+
+class Pairing(Struct, kw_only=True):
+    """A matched set of runs across variants: same task, same seed, different variant.
+
+    Pairings enable paired statistics (Wilcoxon, paired t) instead of unpaired
+    comparisons, which is important when n is small and task variance is high —
+    the default condition for LLM evals.
+    """
+    id: str
+    experiment_id: str
+    dataset_item_id: str                 # the task being run
+    seed: int                            # RNG / sampling seed held constant across variants
+    run_ids_by_variant: dict[str, str]   # variant_id -> trace_id
+
+
+class Verdict(Struct, kw_only=True):
+    """Ranked outcome with confidence intervals, not just aggregate means."""
+    experiment_id: str
+    evaluator: str                       # the score used for ranking
+    ranking: list[str]                   # variant_ids in winning order
+    mean_by_variant: dict[str, float]
+    ci_low_by_variant: dict[str, float]  # 95% CI lower, bootstrap
+    ci_high_by_variant: dict[str, float]
+    n_pairings: int
+    paired_test: str                     # e.g. "wilcoxon_signed_rank"
+    p_value: float | None = None
+    computed_at: datetime
+
+
+class Experiment(Struct, kw_only=True):
+    project_id: str
+    id: str
+    name: str
+    description: str | None = None
+    dataset_id: str                      # what task(s) are being run
+    evaluator_ids: list[str]             # which scores are computed
+    variants: list[Variant]              # what's being compared
+    held_constant: dict[str, str] = field(default_factory=lambda: cast(dict[str, str], {}))
+    planned_runs_per_variant: int
+    status: ExperimentStatus
+    created_by: str
+    created_at: datetime
+    finished_at: datetime | None = None
+
+
+class ExperimentRun(Struct, kw_only=True):
+    """Links a single trace back to its experiment, variant, and pairing."""
+    project_id: str
+    experiment_id: str
+    variant_id: str
+    pairing_id: str | None = None        # null for unpaired runs
+    trace_id: str
+    seed: int
+    started_at: datetime
+```
+
+**Open drafting questions for Q-10a review** (these are not rhetorical; each produces a meaningfully different schema and must be resolved before §4 is touched):
+
+1. Is `config_hash` best as SHA256 of canonical JSON, or should it be a content-addressable store reference?
+2. Should `Verdict` support multiple evaluators in one object, or one-Verdict-per-evaluator as drafted?
+3. Do we need a separate `ExperimentDefinition` (pre-run, immutable contract) vs. `Experiment` (runtime state), or is one object enough?
 
 ---
 
