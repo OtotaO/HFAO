@@ -6,20 +6,18 @@ SPEC §7. ASGI app fronted by Granian in production exposing:
 - ``POST /v1/logs`` — OTLP logs; ``gen_ai.*`` events merge into parent spans
 - ``GET /health`` — liveness
 
-A background ``IngestWriter`` drains the in-process buffer in batches and
-writes to the configured ``StorageBackend``. Backpressure on 80% buffer
-fill returns 429 with ``Retry-After: 1`` (§7.3). ``buffer.py`` formalizes
-the buffer interface and adds a Redis-backed variant in the next commit;
-this commit uses a plain ``queue.Queue`` at the boundary.
+A background ``IngestWriter`` drains the configured ``IngestBuffer`` in
+batches and writes to the storage backend. Backpressure on 80% buffer
+fill returns 429 with ``Retry-After: 1`` (§7.3). The buffer is selected
+via ``hfao.ingest.buffer.make_buffer`` (memory or Redis) from the
+configured ``HFAO_REDIS_URL``.
 """
 
 from __future__ import annotations
 
 import logging
-import queue
 import threading
 import time
-from collections.abc import Iterable
 from typing import Any
 
 from starlette.applications import Starlette
@@ -28,6 +26,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from hfao.config import HFAOConfig
+from hfao.ingest.buffer import IngestBuffer, make_buffer
 from hfao.ingest.normalize import normalize, normalize_scores
 from hfao.ingest.otlp_http import parse_logs, parse_traces
 from hfao.ingest.redact import Redactor
@@ -38,66 +37,8 @@ from hfao.storage import StorageBackend
 
 log = logging.getLogger(__name__)
 
-_BATCH_MAX_SIZE = 10_000
-_BATCH_MAX_BYTES = 32 * 1024 * 1024
 _BATCH_MAX_AGE_S = 2.0
 _RETRY_DELAYS_S = (0.1, 0.5, 2.0)
-_BACKPRESSURE_PCT = 0.8
-_BUFFER_CAPACITY = 100_000
-
-
-class IngestBuffer:
-    """Bounded in-process FIFO of ``Observation`` / ``Score`` batches.
-
-    SPEC §7.3: queue depth drives backpressure; ``near_full()`` triggers
-    429 at the HTTP layer. A richer buffer (Redis Streams) lands in the
-    next commit.
-    """
-
-    def __init__(self, capacity: int = _BUFFER_CAPACITY) -> None:
-        self._capacity = capacity
-        self._queue: queue.Queue[tuple[list[Observation], list[Score]]] = queue.Queue(
-            maxsize=max(capacity // 128, 8)
-        )
-        self._dropped = 0
-        self._dlq_obs: list[Observation] = []
-        self._dlq_scores: list[Score] = []
-
-    def near_full(self) -> bool:
-        qsize = self._queue.qsize()
-        maxsize = self._queue.maxsize or self._capacity
-        return qsize / max(maxsize, 1) >= _BACKPRESSURE_PCT
-
-    def put(self, observations: list[Observation], scores: list[Score]) -> None:
-        if not observations and not scores:
-            return
-        self._queue.put((observations, scores), block=True)
-
-    def drain(self, timeout: float) -> tuple[list[Observation], list[Score]]:
-        try:
-            first = self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return [], []
-        obs, scs = list(first[0]), list(first[1])
-        # Opportunistic: grab anything else immediately available without blocking.
-        while True:
-            try:
-                nxt = self._queue.get_nowait()
-            except queue.Empty:
-                break
-            obs.extend(nxt[0])
-            scs.extend(nxt[1])
-            if len(obs) >= _BATCH_MAX_SIZE:
-                break
-        return obs, scs
-
-    def put_dlq(self, observations: Iterable[Observation], scores: Iterable[Score]) -> None:
-        self._dlq_obs.extend(observations)
-        self._dlq_scores.extend(scores)
-
-    @property
-    def dlq_size(self) -> int:
-        return len(self._dlq_obs) + len(self._dlq_scores)
 
 
 class IngestWriter:
@@ -276,7 +217,7 @@ def serve(config: HFAOConfig) -> None:  # pragma: no cover - boots granian
     else:
         raise ValueError(f"Unknown backend: {config.backend}")
 
-    buffer = IngestBuffer()
+    buffer = make_buffer(config.redis_url)
     writer = IngestWriter(backend=backend, buffer=buffer)
     writer.start()
 
@@ -312,7 +253,6 @@ def _run_granian(app: Starlette, config: HFAOConfig) -> None:  # pragma: no cove
 
 
 __all__ = [
-    "IngestBuffer",
     "IngestWriter",
     "create_app",
     "serve",
