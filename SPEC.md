@@ -45,8 +45,12 @@
 
 ### 1.1 Goals
 
-1. **Match LangSmith / Langfuse / Phoenix / Braintrust / Weave / Helicone** on tracing, datasets, evals, prompts, annotation, cost, monitoring.
-2. **Exceed them** on (a) causal failure attribution across multi-agent traces, (b) closed eval-trace loop, (c) MCP-native queryability, (d) HF-ecosystem distribution.
+1. **Match LangSmith / Langfuse / Phoenix / Braintrust / Weave / Helicone** on tracing, datasets, evals, prompts, annotation, cost, and monitoring.
+2. **Exceed them on three pillars commercial competitors cannot easily copy** (per Q-9 resolution, 2026-04-19):
+   - **(a) Standards-nativeness done right** — OTel GenAI \+ OpenInference on ingest, no proprietary wire format, full OTLP compatibility. Commercial vendors hedge this because it commoditizes their backend; HFAO has no reason to hedge.
+   - **(b) MCP-native queryability** — every observability primitive (traces, scores, causal edges, costs, prompts, datasets, experiments) is queryable by any MCP client. The observability backend agents debug themselves with.
+   - **(c) Closed eval-trace loop** — traces become dataset items become evaluator inputs become scores become monitor triggers become traces, in a single system with a single schema, not glued across three SaaS products.
+   Causal attribution and the Experiment primitive (§16 Q-10) are Phase 1 features that live inside these pillars; they are not themselves the pillars.
 3. **Three deployment shapes** from one codebase: single-file HF Space (DuckDB embedded), Docker Compose self-host (ClickHouse), Kubernetes enterprise (ClickHouse Cloud).
 4. **OTel-native ingest from day one** — no proprietary wire format. Accept OTel GenAI experimental \+ OpenInference; emit either on export.
 5. **Single-file elegance where it earns its place** (cockpit, MCP server, ingest worker), conventional engineering everywhere else.
@@ -2051,7 +2055,9 @@ Commit: `feat(cockpit): Gradio 6 single-file UI with MCP export`.
 
 ---
 
-## 11\. Console (SvelteKit, Phase 2\)
+## 11\. Console (SvelteKit, Phase 2 — deferred to v2.0 per Q-11)
+
+**Status.** Per §16 Q-11 (resolved 2026-04-19), the SvelteKit console is **cut from v1.0.0 scope** and returns as a v2.0 milestone, gated on real user demand — specifically, the first user who hits Gradio's 5K-row Dataframe wall. This section stays in SPEC.md as the authoritative reference for that future build; do not implement any of `apps/console/` before v2.0 is greenlit.
 
 **Phase 2\.** Build only after Phase 1 ships and at least one user has hit Gradio's 5K-row Dataframe wall.
 
@@ -2271,8 +2277,8 @@ Three milestones, each ends with a tagged release.
 | Milestone | Tag | Definition of done |
 | :---- | :---- | :---- |
 | **M1 — Walking skeleton** | `v0.1.0` | OTLP ingest works, DuckDB stores traces, cockpit renders a trace, MCP server returns `list_traces` and `get_trace`. Single-binary HF Space deploys. |
-| **M2 — Phase 1 feature parity** | `v0.5.0` | All §1 goals 1–4 covered with Phase 1 scope. Static causal \+ LLM-judge attribution. ClickHouse backend behind a flag. Eval engine offline \+ online. Annotation queues. Cost rollups. Monitors. |
-| **M3 — Phase 2 differentiation** | `v1.0.0` | SvelteKit console. Counterfactual replay for LangGraph \+ OpenAI Agents SDK \+ Claude Agent SDK. DuckLake warm tier sync. Helm chart. Five integration examples shipped. |
+| **M2 — Phase 1 feature parity \+ Experiment primitive** | `v0.5.0` | All §1 goals 1–4 covered with Phase 1 scope. Static causal \+ LLM-judge attribution. ClickHouse backend behind a flag. Eval engine offline \+ online. Annotation queues. Cost rollups. Monitors. **Experiment runner emits Verdicts with paired statistics (§16 Q-10).** `hfao parquet export` CLI for manual warm-tier (§16 Q-13). |
+| **M3 — Phase 2 differentiation** | `v1.0.0` | Counterfactual replay for LangGraph \+ OpenAI Agents SDK \+ Claude Agent SDK. Helm chart. Five integration examples shipped, including the Q-10 prompt bake-off demo. mkdocs-material docs site. README reframed around the Q-9 three pillars. **SvelteKit console deferred to v2.0 per §16 Q-11; DuckLake auto-sync worker deferred to v1.1 per §16 Q-13.** |
 
 ### 15.2 Week-by-week, commit-by-commit
 
@@ -2293,7 +2299,7 @@ Three milestones, each ends with a tagged release.
 - `[F]` `hfao/storage/clickhouse_backend.py` (§4.3 DDL)
 - `[T]` AC §6 ClickHouse rows \+ parity
 
-**Week 3 — ingest**
+**Week 3 — ingest (\+ Q-10 schema once greenlit)**
 
 - `[F]` `hfao/ingest/normalize.py` (§5.6) with OpenInference \+ OTel GenAI mappers
 - `[F]` `hfao/ingest/server.py` (§7.1)
@@ -2301,15 +2307,19 @@ Three milestones, each ends with a tagged release.
 - `[F]` `hfao/ingest/buffer.py` (in-memory \+ Redis)
 - `[T]` AC §5 \+ §7
 - `[F]` body offload (§6.6)
+- `[F]` `hfao/schema/experiments.py` — the four-object family from §16 Q-10a **(gated on Q-10a human review; lands only after the proposal is resolved)**
+- `[T]` AC experiment/variant/pairing/verdict round-trip (gated identically)
 
-**Week 4 — SDK \+ integrations (round 1\)**
+**Week 4 — SDK \+ Tier 1 integrations (round 1\)** *(per Q-12 resolution)*
 
 - `[F]` `hfao/sdk/init.py`, `context.py`, `score.py`, `decorators.py`
 - `[F]` `hfao/instrumentations/langgraph_extra.py`
 - `[F]` `hfao/instrumentations/openai_agents_extra.py`
 - `[F]` `hfao/instrumentations/claude_agent_extra.py`
-- `[T]` AC §12 for: openai, anthropic, langchain, langgraph, openai\_agents, claude\_agent\_sdk
-- `[D]` quickstart for each
+- `[F]` `hfao/instrumentations/transformers_agents_extra.py` (smolagents)
+- `[T]` AC §12 for the four Tier 1 frameworks (LangGraph, OpenAI Agents SDK, Claude Agent SDK, smolagents) \+ auto-OpenInference LLM SDKs (openai / anthropic / mistral / groq / bedrock / vertex / google-genai)
+- `[D]` quickstart per Tier 1 framework
+- **Explicit non-goal:** no Tier 2 integration code this week (see Q-12). Tier 2 is CrewAI, AutoGen, DSPy, LlamaIndex, Haystack, Pydantic AI, Google ADK, AWS Strands, LiteLLM, MCP-as-instrumentation — all deferred to the Week 8 harness.
 
 **Week 5 — cockpit (round 1\)**
 
@@ -2319,7 +2329,7 @@ Three milestones, each ends with a tagged release.
 - `[T]` AC §10 for these tabs
 - 🏷 **TAG `v0.1.0` (M1)**
 
-**Week 6 — cockpit (round 2\) \+ MCP**
+**Week 6 — cockpit (round 2\) \+ MCP \+ auth**
 
 - `[F]` cockpit Datasets \+ Prompts \+ Evals \+ Annotations \+ Monitors \+ Costs \+ Settings \+ Ask HFAO
 - `[F]` `hfao/mcp_server/server.py` \+ `tools.py` \+ `auth.py` (§9)
@@ -2337,38 +2347,35 @@ Three milestones, each ends with a tagged release.
 - `[T]` AC §8 eval subset
 - `[F]` `hfao/compute/cost.py` \+ `monitor.py`
 - `[T]` AC §8 cost \+ monitor
+- `[D]` README \+ marketing copy refreshed to the Q-9 three-pillar framing **before** the v0.5.0 tag lands next week
 
-**Week 8 — integrations (round 2\) \+ warm tier**
+**Week 8 — experiment runner \+ CLI parquet export \+ Tier 2 harness \+ retention** *(per Q-12 / Q-13)*
 
-- `[F]` instrumentations: crewai, smolagents, autogen, dspy, llama\_index, haystack, litellm, mcp
-- `[F]` `hfao/storage/ducklake_warm.py` \+ `parquet_sync.py` (§6.3)
-- `[T]` AC §6 warm tier
+- `[F]` `hfao/compute/eval/runner.py` — executes an `Experiment` across its `Variant`s, emits `ExperimentRun`s, computes `Verdict`s. This is what makes HFAO genuinely better than Langfuse/Braintrust for comparative study (per Q-9 positioning).
+- `[F]` `hfao/cli.py` — `hfao parquet export <from> <to> --hf-bucket <url>` one-shot command (per Q-13). `storage/parquet_sync.py` stays empty for v1.1.
+- `[T]` Tier 2 test harness: a shared fixture that asserts any community-contributed instrumentor produces canonical traces. Not per-framework AC; one generic harness.
 - `[F]` retention worker (§6.4)
 - 🏷 **TAG `v0.5.0` (M2)**
 
-**Week 9–10 — console (Phase 2\)**
-
-- `[F]` `apps/console/` SvelteKit scaffold
-- `[F]` Traces 100k-row TanStack Table with URL state
-- `[F]` DAG view with Svelte Flow \+ causal overlay
-- `[F]` SQL playground
-- `[T]` AC §11
-
-**Week 11 — counterfactual replay (Phase 2\)**
+**Weeks 9–10 — counterfactual replay \+ examples** *(replaces the former SvelteKit console weeks per Q-11)*
 
 - `[F]` `hfao/compute/causal/counterfactual.py`
 - `[F]` LangGraph replay driver
 - `[F]` OpenAI Agents SDK replay driver
 - `[F]` Claude Agent SDK replay driver
 - `[T]` AC §8 counterfactual extension
+- `[D]` `examples/multi-framework-a2a/` — the marquee causal demo
+- `[D]` `examples/experiment-prompt-bake-off/` — the marquee Q-10 demo (HFAO's answer to "can I A/B prompts like Braintrust"; answer: yes, and with paired statistics)
 
-**Week 12 — examples \+ Helm \+ polish**
+**Week 11 — docs \+ polish \+ Helm** *(replaces weeks 11–12 consolidated)*
 
-- `[D]` `examples/multi-framework-a2a/` (the marquee causal demo)
+- `[D]` mkdocs-material docs site (per §16 Q-7 default)
 - `[I]` Helm chart
 - `[I]` HF Space one-click deploy workflow
-- `[D]` README \+ docs site (mkdocs)
+- `[D]` README rewritten around the Q-9 three-pillar framing
 - 🏷 **TAG `v1.0.0` (M3)**
+
+**Net effect of the Q-9/Q-11/Q-12/Q-13/Q-14 rebalance.** v1.0.0 ships one week earlier (week 11 vs. the original week 12), without the SvelteKit console, with sharper positioning, and with the Experiment schema as the library-level hook that makes HFAO genuinely differentiated for comparative study. §11 (console) stays in this document as deferred-scope v2.0 reference, gated on the first user who actually hits Gradio's 5K-row wall.
 
 ### 15.3 Hard rules for Claude Code execution
 
@@ -2394,8 +2401,178 @@ Three milestones, each ends with a tagged release.
 | Q-6 | Default body offload destination in single-binary shape — local FS or embedded MinIO? | Local FS (simpler; MinIO adds a dep) | Week 2 |
 | Q-7 | Docs site generator — mkdocs-material, Docusaurus, or Mintlify? | mkdocs-material | Week 12 |
 | Q-8 | Telemetry-on-HFAO (anonymous usage stats from self-hosters) — opt-in, opt-out, or none? | Opt-in only; none in v1 | Pre-launch |
+| Q-9 | Should §1.1 pillars be reframed to demote causal attribution from differentiator to feature, with standards-nativeness \+ MCP-native queryability \+ closed eval-trace loop as the three pillars? | Yes, reframe. Causal attribution remains a Phase 1 feature with identical code scope; positioning changes only. | Before week 3 |
+| Q-10 | Add an Experiment / Variant / Pairing / Verdict object family to §4.1 as the primitive for systematic comparison — usable by HFAO eval CLI, CI gates, prompt A/Bs, model bake-offs, and external consumers (e.g. AgentXAgent) doing tournament orchestration? | Yes, but draft the full schema as a §16 proposal first (Q-10a below); do not merge to §4 until the shape is reviewed. The 40-line version initially proposed is insufficient — it lacks variant/pairing/verdict semantics that make the object uniquely useful vs. just tagging traces. | Before week 4 |
+| Q-10a | What is the exact Experiment schema? | See draft below in §16 proposal block. Claude Code to iterate the draft as a `docs(spec): Q-10 experiment schema proposal` commit; human reviews before §4 gets touched. | Before week 4 |
+| Q-11 | Cut SvelteKit console from v1.0.0 scope. Phase 1 / v1.0.0 ships Gradio-only. Console returns as v2.0, gated on real user demand (first user hits Gradio 5K-row wall). | Yes, cut. Frees weeks 9–10 of §15.2. §11 stays in SPEC as deferred-scope reference. | Before week 9 |
+| Q-12 | Tier the §12.2 framework matrix. Tier 1 (v1.0.0 acceptance-bulletproof): LangGraph, OpenAI Agents SDK, Claude Agent SDK, smolagents, plus auto-OpenInference coverage for raw LLM SDKs (openai/anthropic/mistral/groq/bedrock/vertex/google-genai). Tier 2 (documented integration point \+ test harness only, not v1 AC): CrewAI, AutoGen, DSPy, LlamaIndex, Haystack, Pydantic AI, Google ADK, AWS Strands, LiteLLM, MCP-as-instrumentation. | Yes, tier. Axes: Tier 1 covers replay-supported ×3 \+ HF-native ×1. Tier 2 gets community-contribution path with the test harness §12 already mandates. | Before week 4 |
+| Q-13 | Defer DuckLake auto-sync worker to v1.1. Ship `hfao parquet export <date-range> --to <hf-bucket>` CLI in v1.0.0 as the manual warm-tier path. Keep §4.4 partition-path conventions exactly as specified. | Yes. Cut `storage/parquet_sync.py` scheduled worker from week 8; implement `hfao parquet export` in `cli.py` as a one-shot command. Conventions in §4.4 stay — they cost nothing and preserve forward compatibility with auto-sync in v1.1. | Before week 8 |
+| Q-14 | Architectural separation: HFAO ships as the open-source observability library / deployable; AgentXAgent (the arena platform) lives in a separate repository and imports `hfao` as a dependency. No arena-specific code, schema, or UI lives in this repo. | Yes. HFAO stays a general-purpose observatory. AgentXAgent becomes the marquee demo that proves HFAO is the substrate — the same playbook Langfuse/Supabase/Vercel ran with library-plus-product. | Before v1.0.0 launch narrative is written |
 
 **Claude Code instruction.** If an answer arrives, append it to §16 with a date stamp and a one-line rationale. Do not modify the table inline; preserve the original questions for audit.
+
+### 16.1 Resolutions (append-only, per §16 instruction)
+
+- **Q-9 resolved (2026-04-19)** — Yes, reframe. Standards-native ingest, MCP-native queryability, and the closed eval-trace loop are the three pillars. Causal attribution remains in Phase 1 with unchanged code scope and honest "hypotheses not verdicts" framing. *Rationale:* Stage 1 is table stakes, Stage 3 is easily copied, Stage 2 only covers three frameworks — the combo is good but not moat-grade. The three adopted pillars are each architecturally hard for commercial competitors to copy (LangSmith/Braintrust have business reasons not to ship clean MCP or abandon proprietary wire formats).
+- **Q-10 resolved in principle; Q-10a pending (2026-04-19)** — Yes to the object family; no commit to §4 until Q-10a draft is reviewed. Claude Code to produce `docs(spec): Q-10 experiment schema proposal` next, containing the full Experiment/Variant/Pairing/Verdict Structs with rationale, drawing from the draft block in §16.2 below. Human reviews, iterates if needed, then greenlights the §4 commit.
+- **Q-11 resolved (2026-04-19)** — Cut from v1.0.0. §11 stays in SPEC as v2.0 deferred scope. Weeks 9–10 of §15.2 freed; see §15 re-plan in the same commit that lands this resolution.
+- **Q-12 resolved (2026-04-19)** — Tier as proposed. Tier 1 integrations get full per-framework AC tests in `test_ac_12_integrations.py`. Tier 2 gets the shared test harness only and a `CONTRIBUTING.md` path for community PRs.
+- **Q-13 resolved (2026-04-19)** — Defer auto-sync; ship CLI export. `storage/parquet_sync.py` stays as an empty file for v1.1. §4.4 partition conventions untouched.
+- **Q-14 resolved (2026-04-19)** — Separate repos. AgentXAgent is not an HFAO concern. The Experiment schema (Q-10) is the clean library-level primitive that lets external consumers including AgentXAgent build arena/tournament logic on top without HFAO carrying arena assumptions. Rationale mirrors the Langfuse/Supabase/Vercel pattern: library stays general, product stays focused, each benefits from the other without coupling.
+
+### 16.2 Q-10a draft — Experiment schema proposal block
+
+The following is a **proposal**, not yet merged into §4. Claude Code must land this as its own `docs(spec): Q-10 experiment schema proposal` commit and wait for human review before touching `packages/hfao/schema/` or §4.1.
+
+```python
+# Proposed additions to packages/hfao/schema/experiments.py
+# Pending Q-10a review. Do not implement until resolved.
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal, cast
+
+from msgspec import Struct, field
+
+
+# An Experiment groups runs that share a task definition and a set of varied
+# axes. It is the unit of systematic comparison: CI gates, prompt A/Bs, model
+# bake-offs, and externally, tournament rounds.
+#
+# Design principles:
+#   - held-constant vs. varied is explicit, not inferred from tags
+#   - variants are first-class, not just metadata on runs
+#   - pairings support proper paired statistics (same task + seed across variants)
+#   - verdicts carry confidence intervals, not just means — n is usually small
+#   - the experiment itself is replayable; individual run replay is in §8.1
+
+VariantAxis = Literal[
+    "prompt", "model", "tools", "topology", "agent_config", "system_prompt", "other"
+]
+
+ExperimentStatus = Literal["pending", "running", "complete", "aborted"]
+
+
+class Variant(Struct, kw_only=True):
+    """One side of a comparison. Multiple variants per experiment."""
+    id: str                              # stable within experiment
+    name: str                            # human label, e.g. "haiku-with-tools"
+    axis: VariantAxis                    # what this variant changes
+    config_hash: str                     # SHA256 of the variant's full config
+    config: dict[str, str] = field(default_factory=lambda: cast(dict[str, str], {}))
+
+
+class Pairing(Struct, kw_only=True):
+    """A matched set of runs across variants: same task, same seed, different variant.
+
+    Pairings enable paired statistics (Wilcoxon, paired t) instead of unpaired
+    comparisons, which is important when n is small and task variance is high —
+    the default condition for LLM evals.
+    """
+    id: str
+    experiment_id: str
+    dataset_item_id: str                 # the task being run
+    seed: int                            # RNG / sampling seed held constant across variants
+    run_ids_by_variant: dict[str, str]   # variant_id -> trace_id
+
+
+class Verdict(Struct, kw_only=True):
+    """Ranked outcome with confidence intervals, not just aggregate means."""
+    experiment_id: str
+    evaluator: str                       # the score used for ranking
+    ranking: list[str]                   # variant_ids in winning order
+    mean_by_variant: dict[str, float]
+    ci_low_by_variant: dict[str, float]  # 95% CI lower, bootstrap
+    ci_high_by_variant: dict[str, float]
+    n_pairings: int
+    paired_test: str                     # e.g. "wilcoxon_signed_rank"
+    p_value: float | None = None
+    computed_at: datetime
+
+
+class Experiment(Struct, kw_only=True):
+    project_id: str
+    id: str
+    name: str
+    description: str | None = None
+    dataset_id: str                      # what task(s) are being run
+    evaluator_ids: list[str]             # which scores are computed
+    variants: list[Variant]              # what's being compared
+    held_constant: dict[str, str] = field(default_factory=lambda: cast(dict[str, str], {}))
+    planned_runs_per_variant: int
+    status: ExperimentStatus
+    created_by: str
+    created_at: datetime
+    finished_at: datetime | None = None
+
+
+class ExperimentRun(Struct, kw_only=True):
+    """Links a single trace back to its experiment, variant, and pairing."""
+    project_id: str
+    experiment_id: str
+    variant_id: str
+    pairing_id: str | None = None        # null for unpaired runs
+    trace_id: str
+    seed: int
+    started_at: datetime
+```
+
+**Open drafting questions for Q-10a review** (these are not rhetorical; each produces a meaningfully different schema and must be resolved before §4 is touched):
+
+1. Is `config_hash` best as SHA256 of canonical JSON, or should it be a content-addressable store reference?
+2. Should `Verdict` support multiple evaluators in one object, or one-Verdict-per-evaluator as drafted?
+3. Do we need a separate `ExperimentDefinition` (pre-run, immutable contract) vs. `Experiment` (runtime state), or is one object enough?
+
+#### 16.2.1 Rationale for the four-object family
+
+Each object in the family pulls distinct weight; collapsing any pair produces measurably worse ergonomics or breaks the paired-statistics property that makes this useful for small-n LLM evals.
+
+- **`Variant` as a first-class object** (not a tag on a run): a variant is the unit users configure, talk about, and iterate on. If we stored it as `metadata["variant"] = "haiku"`, we'd lose (a) the axis taxonomy, (b) `config_hash` for duplicate-detection across experiments, and (c) the invariant that every run in an experiment resolves to exactly one variant. Making it a Struct lets the runner validate those invariants once, at the boundary.
+- **`Pairing` as its own object** (not inferred): the whole point is the *paired* comparison — same task, same seed, different variant. If pairings were reconstructed from tags, any runtime mismatch between variants (retries, skips, partial failures) would silently poison the statistics. An explicit `Pairing.run_ids_by_variant` map makes mis-pairing a schema error, not a silent data bug.
+- **`Verdict` separate from `Experiment`**: an experiment has one intent; it can have many verdicts. You re-run verdicts when you add a new evaluator, change the paired test, or re-weight. Keeping verdicts as their own append-only object preserves the audit trail that "yesterday's ranking used Wilcoxon at α=0.05; today's uses paired-t at α=0.1" — a property users will ask for the first time a ranking flips.
+- **`ExperimentRun` as a thin join**: one trace, one experiment context. Without it, the trace table would carry nullable experiment/variant/pairing columns forever. The join stays in control plane (Postgres/SQLite); the trace table stays clean.
+
+#### 16.2.2 Drafting question analysis
+
+**(1) `config_hash` — SHA256 of canonical JSON vs. content-addressable store reference.**
+
+- *Option A — SHA256 of canonical JSON.* Simple, deterministic, no new service. Two variants are "the same" iff their config serializes to the same canonical JSON (sorted keys, no insignificant whitespace). Pros: no dependencies, reproducible across backends, trivial to compute in the SDK. Cons: the *contents* of large prompt configs bloat the `config` dict on every variant; a large system prompt is re-stored on every run.
+- *Option B — content-addressable store reference.* `config_hash` points into `hfao-bodies` (or a sibling `hfao-configs` store); `config` becomes a reference and the full blob is fetched on demand. Pros: deduplicates large configs; aligns with the §6.6 body offload story. Cons: adds a store dependency to the eval flow, and introduces a new failure mode where a variant's config is deleted by retention while the experiment is still active.
+- *Recommendation (pending review).* Option A for v1.0.0. Option B can be layered on later by making `config_hash` a URI prefix (`sha256:...` in v1.0.0, `content://...` in a hypothetical v1.2) without a breaking change. Users with giant prompts can still use the §6.6 body offload on the prompt registry side.
+
+**(2) `Verdict` — single multi-evaluator object vs. one-per-evaluator.**
+
+- *Option A — one Verdict per evaluator (as drafted).* Simple, composable. A `compare_runs` MCP tool or a UI table naturally iterates a list of Verdicts. Pros: clear unit of computation, clean append-only log. Cons: callers wanting the "for each variant, show mean-per-evaluator" matrix must join N Verdicts client-side.
+- *Option B — single Verdict carrying a dict-of-evaluators.* The whole matrix is one object; clients render it directly. Pros: one network fetch for the full matrix. Cons: partial re-runs are awkward (you either append a new Verdict object or mutate the existing one, and the latter breaks audit-ability).
+- *Recommendation (pending review).* Option A — keep the one-Verdict-per-evaluator shape. Add a thin aggregation helper (`verdict_matrix(experiment_id) -> dict[evaluator, Verdict]`) in the runner if the matrix view is frequent. The audit-trail argument is decisive: flipping a ranking when you change the paired test must be visible in the log, and Option B hides it behind a mutation.
+
+**(3) `ExperimentDefinition` (immutable contract) vs. `Experiment` (runtime state) — one object or two?**
+
+- *Option A — one `Experiment` object holding both.* What the draft shows. Fields like `status`, `finished_at`, `created_at` mix with `variants`, `held_constant`. Pros: one object to fetch, one table to query. Cons: the definition-vs-state split is blurred; if a user edits `description` or `variants` after launch, audit is fuzzy.
+- *Option B — separate `ExperimentDefinition` + `ExperimentRun` (keep current `Experiment` as the state object).* A definition is immutable after launch; state is mutable. Pros: clean contract separation, aligns with the "prompt_versions are immutable, prompt_labels are mutable" pattern we've already committed to (§4.1 PromptVersion/PromptLabel).
+- *Recommendation (pending review).* Option B. The Prompt object family already pays the cost of separating immutable content from mutable pointers, and users who've internalized that pattern will expect the same shape for experiments. Concretely: `ExperimentDefinition` holds `name`, `description`, `dataset_id`, `evaluator_ids`, `variants`, `held_constant`, `planned_runs_per_variant`, `created_by`, `created_at`. `Experiment` holds `project_id`, `id`, `definition_id` (FK), `status`, `started_at`, `finished_at`. `description` edits produce new definition versions, mirroring `PromptVersion`.
+
+#### 16.2.3 Integration surface (preview)
+
+Not part of Q-10a itself, but to help reviewers see the downstream cost:
+
+- **CLI.** `hfao experiment create --config experiment.yaml`, `hfao experiment run <id>`, `hfao experiment verdict <id>`. The YAML contract freezes on the definition object.
+- **MCP tools (§9.2 extension).** `list_experiments(project)`, `get_experiment(id)`, `get_verdict(experiment_id, evaluator)`, `compare_variants(experiment_id)`. All read-only; a write tool (`create_experiment`) stays gated by `HFAO_MCP_READ_ONLY`.
+- **Cockpit / console.** One new "Experiments" tab. Experiment list → detail (variants table, pairings count, latest verdicts per evaluator). Verdict detail view renders confidence intervals as a forest plot via `gr.HTML` scoped CSS (cockpit) or Svelte Flow (console, when it returns in v2.0).
+- **CI gate.** `hfao eval run --experiment <id> --gate "verdict.ranking[0] == 'baseline' OR verdict.p_value > 0.05"` exits non-zero when the challenger wins at the configured significance. This composes with §8.2's existing `--gate` flag shape.
+- **Storage.** New DDL for `experiments`, `experiment_definitions`, `variants`, `pairings`, `verdicts`, `experiment_runs` in both `storage/ddl/duckdb.sql` and `clickhouse.sql`. Partitioning/PK strategy identical to `events` (project_id-leading, ORDER BY on the ID). No change to hot-path ingest.
+
+#### 16.2.4 AC test sketch (for when Q-10a lands in §4)
+
+Following §4.6's pattern, a `test_ac_4_experiments.py` would cover:
+
+- `test_experiment_definition_immutable_after_launch` — edits produce a new version, old version still fetchable.
+- `test_pairing_invariant_one_run_per_variant` — schema-level check that `run_ids_by_variant.keys()` equals the experiment's variant ids.
+- `test_verdict_paired_test_bootstrap_ci` — Wilcoxon paired + percentile bootstrap CI against a fixture with a known truth.
+- `test_verdict_p_value_monotonic_with_n` — increasing n narrows CI, lowers p-value (sanity only, not a formal statistical test).
+- `test_experiment_run_links_trace_to_variant` — `ExperimentRun(trace_id=T)` is reachable from `get_trace` via a metadata path.
+- `test_cross_backend_parity_experiments` — same as §6.7 parity, scoped to the experiment tables.
 
 ---
 
