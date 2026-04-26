@@ -278,6 +278,134 @@ def ingest_send(
 
 
 @app.command()
+def up(
+    host: Annotated[
+        str, typer.Option("--host", help="Bind host for the cockpit.")
+    ] = "0.0.0.0",
+    port: Annotated[
+        int, typer.Option("--port", "-p", min=1, max=65535, help="Bind port.")
+    ] = 7860,
+    mcp_server: Annotated[
+        bool,
+        typer.Option(
+            "--mcp-server/--no-mcp-server",
+            help="Mount Gradio's auto-MCP export (cockpit.read.* / cockpit.write.*).",
+        ),
+    ] = True,
+    share: Annotated[
+        bool,
+        typer.Option("--share/--no-share", help="Tunnel via gradio.live for remote demos."),
+    ] = False,
+) -> None:
+    """Boot the HFAO Cockpit (apps/cockpit/cockpit.py) — SPEC §10.1."""
+    # Imported lazily so `hfao --version` / `hfao migrate` don't pay
+    # the Gradio import cost on cold start.
+    import gradio as gr  # noqa: PLC0415 — lazy boot path
+
+    from apps.cockpit.cockpit import demo
+
+    # Gradio doesn't re-export `themes` at top-level; pyright flags the
+    # access. Use the canonical attribute path with a strict-mode shim.
+    themes_mod = gr.themes  # type: ignore[reportPrivateImportUsage]
+    theme = themes_mod.Soft(primary_hue="indigo", secondary_hue="violet")
+    demo.launch(
+        server_name=host,
+        server_port=port,
+        mcp_server=mcp_server,
+        share=share,
+        theme=theme,
+    )
+
+
+@app.command()
+def migrate() -> None:
+    """Initialize storage schemas for the configured backend + control plane.
+
+    SPEC §15.2 Week 5. Idempotent: ``init_schema()`` is a CREATE TABLE
+    IF NOT EXISTS sequence on every backend, so re-running is safe.
+    """
+    cfg = HFAOConfig.from_env()
+    console = Console()
+    with _open_backend(cfg) as backend:
+        backend.init_schema()
+        console.print(
+            f"[green]✓[/green] hot-tier schema initialised — backend={cfg.backend} "
+            f"path={_duckdb_path_for(cfg)}"
+        )
+
+    if cfg.backend == "clickhouse" and cfg.clickhouse_dsn:
+        from hfao.storage.clickhouse_backend import ClickHouseBackend
+
+        ch = ClickHouseBackend(cfg.clickhouse_dsn)
+        try:
+            ch.init_schema()
+            console.print(
+                f"[green]✓[/green] ClickHouse schema initialised — dsn={cfg.clickhouse_dsn}"
+            )
+        finally:
+            ch.close()
+
+    from hfao.storage.control_plane import ControlPlane
+
+    dsn = cfg.control_plane_dsn
+    if dsn == "sqlite:///data/control.db":
+        # Default Appendix A path needs root; fall back like DuckDB.
+        dsn = f"sqlite:///{Path.cwd() / 'hfao-control.db'}"
+    cp = ControlPlane(dsn)
+    cp.init_schema()
+    cp.close()
+    console.print(f"[green]✓[/green] control plane schema initialised — dsn={dsn}")
+
+
+@app.command()
+def seed(
+    count: Annotated[
+        int, typer.Option("--count", "-n", min=1, help="Number of synthetic traces.")
+    ] = 25,
+    seed: Annotated[
+        int, typer.Option(help="RNG seed for reproducible cockpit demos.")
+    ] = 1337,
+) -> None:
+    """Seed the configured backend with synthetic traces for the cockpit demo.
+
+    Uses the same in-process ingest pipeline as ``hfao ingest send``: each
+    span runs through the §5.6 normalizer + §6.5 redactor + §6.6 body
+    offloader before landing in storage. ``hfao up`` after this gives the
+    Home / Traces / Live tail tabs something to render.
+    """
+    cfg = HFAOConfig.from_env()
+    console = Console()
+    rng = random.Random(seed)
+
+    redactor = Redactor(RedactionConfig())
+    store_root = Path(cfg.bodies_path)
+    if str(store_root) == "/data/bodies":
+        store_root = Path.cwd() / "hfao-bodies"
+    offloader = BodyOffloader(
+        LocalBodyStore(store_root),
+        threshold_bytes=cfg.body_offload_threshold_bytes,
+    )
+
+    with _open_backend(cfg) as backend:
+        backend.init_schema()
+        for _ in range(count):
+            span = _synthetic_span(project_id=cfg.project, rng=rng)
+            _ingest_one(
+                span,
+                backend=backend,
+                redactor=redactor,
+                offloader=offloader,
+                project_id=cfg.project,
+                cost_usd=round(rng.uniform(0.0005, 0.12), 6),
+            )
+
+    console.print(
+        f"[green]✓[/green] seeded {count} traces into project={cfg.project} "
+        f"(seed={seed})"
+    )
+
+
+@app.command()
 def query(
     n: Annotated[int, typer.Argument(min=1, help="How many traces to show.")] = 20,
 ) -> None:
