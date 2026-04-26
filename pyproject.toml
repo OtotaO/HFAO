@@ -55,6 +55,9 @@ ignore = []
 testpaths = ["packages/hfao-py-tests", "tests"]
 python_files = "test_*.py"
 addopts = "--strict-markers"
+# Add the repo root so `from apps.cockpit...` resolves in AC §10 tests
+# without requiring `apps/` to be a wheel-installed package.
+pythonpath = ["."]
 markers = [
     "acceptance: marks tests as acceptance tests (deselect with '-m \"not acceptance\"')",
     "perf: marks tests as performance tests",
