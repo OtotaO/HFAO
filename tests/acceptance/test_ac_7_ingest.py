@@ -58,7 +58,7 @@ def _otlp_request(span_id_hex: str, model: str = "gpt-4o") -> bytes:
     return req.SerializeToString()
 
 
-def test_429_when_buffer_full() -> None:
+def test_429_when_buffer_full(tmp_path) -> None:
     # Tiny buffer so we can saturate it.
     backend = DuckDBBackend(":memory:")
     backend.init_schema()
@@ -68,7 +68,10 @@ def test_429_when_buffer_full() -> None:
             return True
 
     buf = _Buf(capacity=8)
-    cfg = HFAOConfig(project="ingest-test")
+    # Use a per-test tempdir for the body store so the fixture works on
+    # GitHub-hosted runners where the Docker default ``/data/bodies`` is
+    # not writable.
+    cfg = HFAOConfig(project="ingest-test", bodies_path=str(tmp_path / "bodies"))
     app = create_app(backend=backend, buffer=buf, config=cfg)
     with TestClient(app) as client:
         r = client.post(
