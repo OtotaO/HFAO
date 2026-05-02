@@ -76,11 +76,14 @@ def _build_otel_genai_request() -> trace_service_pb2.ExportTraceServiceRequest:
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
+def client(tmp_path) -> Iterator[TestClient]:
     backend = DuckDBBackend(":memory:")
     backend.init_schema()
     buffer = MemoryBuffer()
-    cfg = HFAOConfig(project="wire-test")
+    # Use a per-test tempdir for the body store so the fixture works on
+    # GitHub-hosted runners where the Docker default ``/data/bodies`` is
+    # not writable.
+    cfg = HFAOConfig(project="wire-test", bodies_path=str(tmp_path / "bodies"))
     app = create_app(backend=backend, buffer=buffer, config=cfg)
     with TestClient(app) as c:
         # Expose buffer on the client via state so tests can drain.
