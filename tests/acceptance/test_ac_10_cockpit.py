@@ -204,3 +204,9 @@ def test_trace_chat_handles_handoff_and_guardrail() -> None:
     assert "◆ **agent**" in rendered
     assert "→ **handoff** → `billing-agent`" in rendered
     assert "⛨ **guardrail**: `content_filter` (triggered=True)" in rendered
+
+def test_week6_tabs_render(cockpit_env: Path) -> None:
+    """Week 6 tabs must render without crashing."""
+    cockpit = importlib.import_module("apps.cockpit.cockpit")
+    blocks = cockpit.build_blocks()
+    assert blocks is not None
