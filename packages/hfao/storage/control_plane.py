@@ -357,6 +357,22 @@ class ControlPlane:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_prompts(self, *, project_id: str) -> list[dict[str, Any]]:
+        """Latest version of every prompt in a project (one row per name).
+
+        Backs the §9.2 ``list_prompts`` MCP tool.
+        """
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT pv.* FROM prompt_versions pv "
+                "JOIN (SELECT name, MAX(version) AS v FROM prompt_versions "
+                "      WHERE project_id = ? GROUP BY name) latest "
+                "  ON latest.name = pv.name AND latest.v = pv.version "
+                "WHERE pv.project_id = ? ORDER BY pv.name",
+                (project_id, project_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     # ---- audit log ----
 
     def record_audit(
