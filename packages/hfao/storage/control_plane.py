@@ -222,6 +222,24 @@ class ControlPlane:
             )
         return self.get_project(pid)
 
+    def create_project_with_id(
+        self, *, project_id: str, workspace_id: str, slug: str, name: str
+    ) -> dict[str, Any]:
+        """Insert a project with a caller-supplied id.
+
+        Used by the cockpit's single-binary auto-bootstrap (``_ensure_project``)
+        when an event already references a project_id that the control plane
+        has never seen — the literal id must be preserved so the events table
+        and the ``projects`` row stay joined.
+        """
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO projects (id, workspace_id, slug, name, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (project_id, workspace_id, slug, name, _now()),
+            )
+        return self.get_project(project_id)
+
     def get_project(self, project_id: str) -> dict[str, Any]:
         with self._lock:
             row = self._con.execute(
