@@ -768,30 +768,55 @@ _TRACES_HEADERS = [
 
 
 def build_blocks() -> gr.Blocks:
+
     """Construct the cockpit ``gr.Blocks`` UI.
 
+
+
     Theme is supplied at ``launch()`` time per Gradio 6.0 API.
+
     """
+
     with gr.Blocks(title="HFAO Cockpit") as demo:
+
         gr.Markdown("# HFAO Observatory")
+
         with gr.Row():
+
             project = gr.Dropdown(
+
                 choices=[DEFAULT_PROJECT],
+
                 value=DEFAULT_PROJECT,
+
                 label="Project",
+
                 allow_custom_value=True,
+
                 scale=2,
+
             )
+
             refresh_btn = gr.Button("Refresh", scale=1)
 
+
+
         with gr.Tabs():
+
             with gr.Tab("Home"):
+
                 _build_home_tab(project, refresh_btn)
+
             with gr.Tab("Traces"):
+
                 _build_traces_tab(project, refresh_btn)
+
             with gr.Tab("Trace detail") as trace_detail_tab:
+
                 _build_trace_detail_tab(project, trace_detail_tab)
+
             with gr.Tab("Live tail"):
+
                 _build_live_tail_tab(project)
             with gr.Tab("Datasets"):
                 _build_datasets_tab(project, refresh_btn)
@@ -810,7 +835,58 @@ def build_blocks() -> gr.Blocks:
             with gr.Tab("Ask HFAO"):
                 _build_ask_hfao_tab(project)
 
+            with gr.Tab("Datasets"):
+
+                from apps.cockpit.cockpit_week6 import _build_datasets_tab
+
+                _build_datasets_tab(project, refresh_btn)
+
+            with gr.Tab("Prompts"):
+
+                from apps.cockpit.cockpit_week6 import _build_prompts_tab
+
+                _build_prompts_tab(project, refresh_btn)
+
+            with gr.Tab("Evals"):
+
+                from apps.cockpit.cockpit_week6 import _build_evals_tab
+
+                _build_evals_tab(project, refresh_btn)
+
+            with gr.Tab("Annotations"):
+
+                from apps.cockpit.cockpit_week6 import _build_annotations_tab
+
+                _build_annotations_tab(project, refresh_btn)
+
+            with gr.Tab("Monitors"):
+
+                from apps.cockpit.cockpit_week6 import _build_monitors_tab
+
+                _build_monitors_tab(project, refresh_btn)
+
+            with gr.Tab("Costs"):
+
+                from apps.cockpit.cockpit_week6 import _build_costs_tab
+
+                _build_costs_tab(project, refresh_btn)
+
+            with gr.Tab("Settings"):
+
+                from apps.cockpit.cockpit_week6 import _build_settings_tab
+
+                _build_settings_tab(project)
+
+            with gr.Tab("Ask HFAO"):
+
+                from apps.cockpit.cockpit_week6 import _build_ask_hfao_tab
+
+                _build_ask_hfao_tab()
+
+
+
     return demo
+
 
 
 def _build_home_tab(project: gr.Dropdown, refresh_btn: gr.Button) -> None:

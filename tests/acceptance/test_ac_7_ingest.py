@@ -58,7 +58,7 @@ def _otlp_request(span_id_hex: str, model: str = "gpt-4o") -> bytes:
     return req.SerializeToString()
 
 
-def test_429_when_buffer_full(tmp_path) -> None:
+def test_429_when_buffer_full(tmp_path: pytest.FixtureRequest) -> None:
     # Tiny buffer so we can saturate it.
     backend = DuckDBBackend(":memory:")
     backend.init_schema()
