@@ -185,6 +185,35 @@ class DuckDBBackend:
             )
         return out
 
+    def refresh_cost_rollup(self) -> int:
+        """Rebuild cost_daily from events_current (§8.3).
+
+        Aggregates by (project_id, date, user_id, agent_id, model, prompt_name)
+        using empty-string sentinels for NULL group keys (§4.5 rule 4).
+        Idempotent: deletes and re-inserts the whole table; safe to call from
+        a periodic worker (60s cadence per §8.3).
+        """
+        sql = """
+        DELETE FROM cost_daily;
+        INSERT INTO cost_daily
+        SELECT project_id,
+               CAST(start_time AS DATE) AS date,
+               COALESCE(user_id, '')     AS user_id,
+               COALESCE(agent_id, '')    AS agent_id,
+               COALESCE(model, '')       AS model,
+               COALESCE(prompt_name, '') AS prompt_name,
+               SUM(total_cost_usd)       AS total_cost_usd,
+               SUM(total_tokens)         AS total_tokens,
+               COUNT(*)                  AS call_count
+        FROM events_current
+        GROUP BY project_id, date, user_id, agent_id, model, prompt_name;
+        """
+        with self._lock:
+            self._con.execute(sql)
+            cur = self._con.execute("SELECT count() FROM cost_daily")
+            row = cur.fetchone()
+        return int(row[0]) if row else 0
+
     def cost_rollup(
         self,
         project_id: str,

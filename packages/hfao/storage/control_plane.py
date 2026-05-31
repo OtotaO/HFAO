@@ -127,6 +127,35 @@ CREATE TABLE IF NOT EXISTS annotation_items (
     completed_at   TEXT,
     PRIMARY KEY (queue_id, trace_id, observation_id)
 );
+
+CREATE TABLE IF NOT EXISTS monitors (
+    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    id                  TEXT NOT NULL,
+    name                TEXT NOT NULL,
+    nl_description      TEXT NOT NULL,
+    sql_query           TEXT NOT NULL,
+    threshold           REAL NOT NULL,
+    operator            TEXT NOT NULL CHECK (operator IN ('gt','lt','gte','lte','eq')),
+    window              TEXT NOT NULL,
+    channels            TEXT NOT NULL DEFAULT '[]',   -- JSON list[str]
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    created_at          TEXT NOT NULL,
+    last_evaluated_at   TEXT,
+    PRIMARY KEY (project_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS monitor_alerts (
+    id                  TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL,
+    monitor_id          TEXT NOT NULL,
+    fired_at            TEXT NOT NULL,
+    actual_value        REAL NOT NULL,
+    threshold           REAL NOT NULL,
+    operator            TEXT NOT NULL,
+    message             TEXT NOT NULL,
+    channels_notified   TEXT NOT NULL DEFAULT '[]',
+    delivery_errors     TEXT NOT NULL DEFAULT '[]'
+);
 """
 
 
@@ -594,6 +623,140 @@ class ControlPlane:
                 "WHERE queue_id = ? AND trace_id = ? AND observation_id = ?",
                 (status, completed_at, queue_id, trace_id, observation_id or ""),
             )
+
+    # ---- monitors (§8.4 Monitor / Alert) ----
+
+    def create_monitor(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        nl_description: str,
+        sql_query: str,
+        threshold: float,
+        operator: str,
+        window: str,
+        channels: list[str] | None = None,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        if operator not in ("gt", "lt", "gte", "lte", "eq"):
+            raise ValueError(f"invalid operator: {operator!r}")
+        mid = _new_id("mon")
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO monitors (project_id, id, name, nl_description, "
+                "sql_query, threshold, operator, window, channels, enabled, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    project_id,
+                    mid,
+                    name,
+                    nl_description,
+                    sql_query,
+                    float(threshold),
+                    operator,
+                    window,
+                    json.dumps(channels or []),
+                    1 if enabled else 0,
+                    _now(),
+                ),
+            )
+        return self.get_monitor(project_id=project_id, monitor_id=mid)
+
+    def get_monitor(
+        self, *, project_id: str, monitor_id: str
+    ) -> dict[str, Any]:
+        with self._lock:
+            row = self._con.execute(
+                "SELECT * FROM monitors WHERE project_id = ? AND id = ?",
+                (project_id, monitor_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError((project_id, monitor_id))
+        return dict(row)
+
+    def list_monitors(
+        self, *, project_id: str, only_enabled: bool = False
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM monitors WHERE project_id = ?"
+        params: list[Any] = [project_id]
+        if only_enabled:
+            sql += " AND enabled = 1"
+        sql += " ORDER BY created_at"
+        with self._lock:
+            rows = self._con.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_monitor_enabled(
+        self, *, project_id: str, monitor_id: str, enabled: bool
+    ) -> None:
+        with self._lock:
+            self._con.execute(
+                "UPDATE monitors SET enabled = ? WHERE project_id = ? AND id = ?",
+                (1 if enabled else 0, project_id, monitor_id),
+            )
+
+    def mark_monitor_evaluated(
+        self, *, project_id: str, monitor_id: str, at: str | None = None
+    ) -> None:
+        with self._lock:
+            self._con.execute(
+                "UPDATE monitors SET last_evaluated_at = ? "
+                "WHERE project_id = ? AND id = ?",
+                (at or _now(), project_id, monitor_id),
+            )
+
+    def record_alert(
+        self,
+        *,
+        project_id: str,
+        monitor_id: str,
+        fired_at: str,
+        actual_value: float,
+        threshold: float,
+        operator: str,
+        message: str,
+        channels_notified: list[str] | None = None,
+        delivery_errors: list[str] | None = None,
+    ) -> dict[str, Any]:
+        aid = _new_id("alrt")
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO monitor_alerts (id, project_id, monitor_id, fired_at, "
+                "actual_value, threshold, operator, message, channels_notified, "
+                "delivery_errors) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    aid,
+                    project_id,
+                    monitor_id,
+                    fired_at,
+                    float(actual_value),
+                    float(threshold),
+                    operator,
+                    message,
+                    json.dumps(channels_notified or []),
+                    json.dumps(delivery_errors or []),
+                ),
+            )
+            row = self._con.execute(
+                "SELECT * FROM monitor_alerts WHERE id = ?", (aid,)
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def list_alerts(
+        self, *, project_id: str, monitor_id: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM monitor_alerts WHERE project_id = ?"
+        params: list[Any] = [project_id]
+        if monitor_id is not None:
+            sql += " AND monitor_id = ?"
+            params.append(monitor_id)
+        sql += " ORDER BY fired_at DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._con.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
 
     # ---- audit log ----
 
