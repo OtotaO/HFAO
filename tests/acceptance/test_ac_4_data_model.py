@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import msgspec
+import pytest
 from hfao.schema.events import Observation
 
 
@@ -19,7 +20,7 @@ def test_msgspec_struct_roundtrip():
     assert decoded.project_id == obs.project_id
     assert decoded.trace_id == obs.trace_id
 
-def test_duckdb_ddl_applies_clean(tmp_path):
+def test_duckdb_ddl_applies_clean(tmp_path: "pytest.FixtureRequest"):
     import duckdb
     db_path = str(tmp_path / "test.duckdb")
     con = duckdb.connect(db_path)
