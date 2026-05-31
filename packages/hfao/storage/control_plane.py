@@ -156,6 +156,15 @@ CREATE TABLE IF NOT EXISTS monitor_alerts (
     channels_notified   TEXT NOT NULL DEFAULT '[]',
     delivery_errors     TEXT NOT NULL DEFAULT '[]'
 );
+
+CREATE TABLE IF NOT EXISTS retention_policies (
+    project_id    TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    hot_days      INTEGER NOT NULL DEFAULT 30,
+    warm_days     INTEGER NOT NULL DEFAULT 365,
+    bodies_days   INTEGER NOT NULL DEFAULT 90,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    updated_at    TEXT NOT NULL
+);
 """
 
 
@@ -756,6 +765,60 @@ class ControlPlane:
         params.append(limit)
         with self._lock:
             rows = self._con.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- retention policies (§6.4) ----
+
+    def upsert_retention_policy(
+        self,
+        *,
+        project_id: str,
+        hot_days: int = 30,
+        warm_days: int = 365,
+        bodies_days: int = 90,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """Create or update the retention policy for a project."""
+        if min(hot_days, warm_days, bodies_days) < 0:
+            raise ValueError("retention day-counts must be ≥ 0 (0 disables that tier)")
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO retention_policies (project_id, hot_days, warm_days, "
+                "bodies_days, enabled, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (project_id) DO UPDATE SET "
+                "hot_days = excluded.hot_days, "
+                "warm_days = excluded.warm_days, "
+                "bodies_days = excluded.bodies_days, "
+                "enabled = excluded.enabled, "
+                "updated_at = excluded.updated_at",
+                (
+                    project_id,
+                    int(hot_days),
+                    int(warm_days),
+                    int(bodies_days),
+                    1 if enabled else 0,
+                    _now(),
+                ),
+            )
+        return self.get_retention_policy(project_id=project_id)
+
+    def get_retention_policy(self, *, project_id: str) -> dict[str, Any]:
+        """Get the retention policy for a project; create default on miss."""
+        with self._lock:
+            row = self._con.execute(
+                "SELECT * FROM retention_policies WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+        if row is None:
+            return self.upsert_retention_policy(project_id=project_id)
+        return dict(row)
+
+    def list_retention_policies(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT * FROM retention_policies ORDER BY project_id"
+            ).fetchall()
         return [dict(r) for r in rows]
 
     # ---- audit log ----

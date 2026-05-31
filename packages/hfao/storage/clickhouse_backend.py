@@ -294,6 +294,28 @@ class ClickHouseBackend:
             )
         return out
 
+    def purge_old(
+        self, project_id: str, *, before: datetime
+    ) -> dict[str, int]:
+        """ALTER TABLE DELETE — ClickHouse's lightweight mutation path."""
+        import contextlib
+
+        before_iso = before.strftime("%Y-%m-%d %H:%M:%S")
+        for table, column in (
+            ("events", "start_time"),
+            ("scores", "timestamp"),
+            ("causal_edges", "computed_at"),
+        ):
+            with contextlib.suppress(Exception):
+                self._client.command(
+                    f"ALTER TABLE {table} DELETE WHERE project_id = "
+                    f"'{project_id}' AND {column} < toDateTime64('{before_iso}', 3)"
+                )
+        # ClickHouse mutations are async; the row-count response is not
+        # meaningful synchronously. Return zeros to keep the protocol
+        # contract honest: callers should not rely on the count here.
+        return {"events": 0, "scores": 0, "causal_edges": 0}
+
     def refresh_cost_rollup(self) -> int:
         """No-op: ``cost_daily_mv`` is a ``SummingMergeTree`` materialized view
         that ClickHouse keeps current as events are inserted (§8.3). The

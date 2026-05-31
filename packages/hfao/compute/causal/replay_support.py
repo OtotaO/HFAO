@@ -46,6 +46,10 @@ REPLAY_UNSUPPORTED_FRAMEWORKS: frozenset[str] = frozenset(
         "google_adk",
         "aws_strands",
         "litellm",
+        # MCP-as-instrumentation per §16 Q-12: the protocol carries tool
+        # calls but Stage-2 replay requires an agent loop the MCP layer
+        # alone doesn't own. Surface honestly as unsupported.
+        "mcp",
     }
 )
 

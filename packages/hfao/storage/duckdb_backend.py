@@ -185,6 +185,64 @@ class DuckDBBackend:
             )
         return out
 
+    def export_events_to_parquet(
+        self,
+        project_id: str,
+        *,
+        start: datetime,
+        end: datetime,
+        out_path: str,
+    ) -> int:
+        """Materialise events in ``[start, end)`` for ``project_id`` as Parquet.
+
+        Returns the row count written. Used by ``hfao parquet export`` per
+        §16 Q-13. Keeps the COPY ... TO 'foo.parquet' inside the storage
+        boundary (Appendix C rule 4).
+        """
+        with self._lock:
+            pre = self._con.execute(
+                "SELECT count() FROM events_current "
+                "WHERE project_id = ? AND start_time >= ? AND start_time < ?",
+                [project_id, start, end],
+            ).fetchone()
+            count = int(pre[0]) if pre else 0
+            if count == 0:
+                return 0
+            safe_path = out_path.replace("'", "''")
+            self._con.execute(
+                f"COPY (SELECT * FROM events_current "
+                f"WHERE project_id = ? AND start_time >= ? AND start_time < ?) "
+                f"TO '{safe_path}' (FORMAT PARQUET)",
+                [project_id, start, end],
+            )
+        return count
+
+    def purge_old(
+        self, project_id: str, *, before: datetime
+    ) -> dict[str, int]:
+        """DELETE rows older than ``before`` (§6.4). Returns counts per table."""
+        purge_specs = (
+            ("events", "start_time"),
+            ("scores", "timestamp"),
+            ("causal_edges", "computed_at"),
+        )
+        counts: dict[str, int] = {}
+        with self._lock:
+            for table, column in purge_specs:
+                pre = self._con.execute(
+                    f"SELECT count() FROM {table} "
+                    f"WHERE project_id = ? AND {column} < ?",
+                    [project_id, before],
+                ).fetchone()
+                pre_count = int(pre[0]) if pre else 0
+                self._con.execute(
+                    f"DELETE FROM {table} "
+                    f"WHERE project_id = ? AND {column} < ?",
+                    [project_id, before],
+                )
+                counts[table] = pre_count
+        return counts
+
     def refresh_cost_rollup(self) -> int:
         """Rebuild cost_daily from events_current (§8.3).
 
