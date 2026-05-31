@@ -450,9 +450,9 @@ def cockpit_evals_list(project: str) -> list[list[Any]]:
 
 
 EVALS_DEFER_NOTICE = (
-    "Eval launching lands in **Week 8** with the experiment runner "
-    "(§15.2; resolved §16 Q-17). This tab is read-only for now: it lists past "
-    "eval runs by `eval_run_id` from the `scores` table once any exist."
+    "Past eval runs are grouped here from the `scores` table by `eval_run_id`. "
+    "Launch new runs via the MCP `run_eval` tool or `hfao eval run` (CLI). "
+    "Multi-variant experiment tournaments (§16 Q-10) land in **Week 8**."
 )
 
 

@@ -57,6 +57,12 @@ ingest_app = typer.Typer(
 )
 app.add_typer(ingest_app, name="ingest")
 
+eval_app = typer.Typer(
+    help="Eval engine (SPEC §8.2): offline runs + CI gates.",
+    no_args_is_help=True,
+)
+app.add_typer(eval_app, name="eval")
+
 
 # ---- shared helpers ----
 
@@ -643,6 +649,67 @@ def _compute_redaction_rate(backend: DuckDBBackend, cfg: HFAOConfig) -> float:
     if total == 0:
         return 0.0
     return hits / total
+
+
+@eval_app.command("run")
+def eval_run(
+    dataset: Annotated[str, typer.Argument(help="Dataset id OR name.")],
+    evaluators: Annotated[
+        str,
+        typer.Option(
+            "--evaluators",
+            "-e",
+            help="Comma-separated evaluator names.",
+        ),
+    ] = "exact_match",
+    project: Annotated[
+        str | None,
+        typer.Option(help="Project id; defaults to HFAO_PROJECT."),
+    ] = None,
+    runtime_url: Annotated[
+        str | None,
+        typer.Option("--runtime", help="HTTP runtime URL; POST {input, metadata}."),
+    ] = None,
+    gate: Annotated[
+        str | None,
+        typer.Option(
+            help='CI gate expression, e.g. "exact_match>=0.9". '
+            "Exits 1 on failure."
+        ),
+    ] = None,
+) -> None:
+    """Run evaluators offline against a dataset and print a summary table."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from hfao.compute.eval.runner import run_eval as _run_eval
+    from hfao.config import HFAOConfig
+
+    cfg = HFAOConfig.from_env()
+    project_id = project or cfg.project
+    evaluator_names = [e.strip() for e in evaluators.split(",") if e.strip()]
+    if not evaluator_names:
+        raise typer.BadParameter("at least one evaluator required")
+    result = _run_eval(
+        project=project_id,
+        dataset=dataset,
+        evaluators=evaluator_names,
+        runtime_url=runtime_url,
+        gate_expression=gate,
+    )
+    console = Console()
+    table = Table(title=f"Eval run {result['id']}")
+    table.add_column("metric")
+    table.add_column("mean", justify="right")
+    for name, value in result["summary"].items():
+        table.add_row(name, f"{value:.4f}")
+    console.print(table)
+    console.print(
+        f"items={result['sample_count']} status={result['status']} "
+        f"gate={result['gate_expression'] or 'none'} passed={result['gate_passed']}"
+    )
+    if gate and result["gate_passed"] is False:
+        raise typer.Exit(code=1)
 
 
 __all__ = ["app", "render_dashboard"]

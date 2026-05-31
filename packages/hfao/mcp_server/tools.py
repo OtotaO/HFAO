@@ -13,9 +13,9 @@ Tools return JSON-able builtins (``dict`` / ``list[dict]``) rather than msgspec
 Structs so the FastMCP serializer stays backend-agnostic; this matches the
 ``dict[str, Any]`` convention the storage protocol already uses.
 
-The ``run_eval`` tool's executor lands in Week 8 (§15.2, resolved §16 Q-17):
-until the experiment runner exists it raises a clear error rather than a
-misleading stub. AC §9 does not exercise it.
+``run_eval`` invokes :mod:`hfao.compute.eval.runner` directly. The Week-8
+experiment runner (§15.2; §16 Q-17) extends this to multi-variant tournaments
+without changing the §9.2 tool signature.
 """
 
 from __future__ import annotations
@@ -176,26 +176,23 @@ def register_tools(mcp: FastMCP, deps: Deps) -> None:  # noqa: C901 - one flat s
     ) -> dict[str, Any]:
         """Launch an offline eval run against a dataset.
 
-        The executor (experiment runner) lands in Week 8 per §15.2 / §16 Q-17.
+        Calls :func:`hfao.compute.eval.runner.run_eval`, which iterates the
+        dataset, invokes the runtime (HTTP if ``runtime_url`` is provided,
+        echo runtime otherwise), runs each evaluator, and persists scores
+        with the new ``eval_run_id`` so the cockpit Evals tab + MCP queries
+        can aggregate them.
         """
         authorize_project(control, project)
-        try:
-            from hfao.compute.eval import runner
-        except ImportError:
-            runner = None  # type: ignore[assignment]
-        entry = getattr(runner, "run_eval", None) if runner is not None else None
-        if entry is None:
-            raise NotImplementedError(
-                "run_eval executor lands in Week 8 (§15.2; resolved §16 Q-17). "
-                "The eval/experiment runner is not built yet."
-            )
-        result: dict[str, Any] = entry(
+        from hfao.compute.eval.runner import run_eval as _run_eval
+
+        return _run_eval(
             project=project,
             dataset=dataset,
             evaluators=evaluators,
             runtime_url=runtime_url,
+            backend=backend,
+            control=control,
         )
-        return result
 
     @mcp.tool
     def get_prompt(
