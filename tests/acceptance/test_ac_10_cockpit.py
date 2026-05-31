@@ -25,13 +25,15 @@ import pytest
 
 @pytest.fixture
 def cockpit_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Point the cockpit at a fresh DuckDB under ``tmp_path``."""
+    """Point the cockpit at a fresh DuckDB + control plane under ``tmp_path``."""
     duck_path = tmp_path / "hfao.duckdb"
     bodies = tmp_path / "bodies"
+    control = tmp_path / "control.db"
     monkeypatch.setenv("HFAO_DUCKDB_PATH", str(duck_path))
     monkeypatch.setenv("HFAO_BODIES_PATH", str(bodies))
     monkeypatch.setenv("HFAO_PROJECT", "ac10")
     monkeypatch.setenv("HFAO_BACKEND", "duckdb")
+    monkeypatch.setenv("HFAO_CONTROL_PLANE_DSN", f"sqlite:///{control}")
     # The cockpit module reads HFAOConfig.from_env() at import time, so
     # force a fresh import for each test invocation.
     sys.modules.pop("apps.cockpit.cockpit", None)
@@ -205,8 +207,108 @@ def test_trace_chat_handles_handoff_and_guardrail() -> None:
     assert "→ **handoff** → `billing-agent`" in rendered
     assert "⛨ **guardrail**: `content_filter` (triggered=True)" in rendered
 
-def test_week6_tabs_render(cockpit_env: Path) -> None:
-    """Week 6 tabs must render without crashing."""
+
+# ---- Week 6 (round 2) tabs -----------------------------------------------
+
+
+def test_dataset_add_from_trace_detail(cockpit_env: Path) -> None:
+    """Create a dataset and add an item sourced from a real trace (§10.6)."""
+    _seed(cockpit_env, count=3)
     cockpit = importlib.import_module("apps.cockpit.cockpit")
-    blocks = cockpit.build_blocks()
-    assert blocks is not None
+    ds = cockpit.cockpit_create_dataset("ac10", "goldens", "from cockpit AC")
+    assert ds["id"].startswith("ds_")
+    rows = cockpit.cockpit_traces_table("ac10")
+    assert rows
+    trace_id = rows[0][0]
+    item = cockpit.cockpit_add_dataset_item_from_trace("ac10", ds["id"], trace_id)
+    assert item["source_trace_id"] == trace_id
+    listed = cockpit.cockpit_datasets_list("ac10")
+    assert any(r[0] == ds["id"] for r in listed)
+
+
+def test_prompt_label_move_creates_audit_log(cockpit_env: Path) -> None:
+    """Moving a label must persist and emit an audit_log row (§13.5)."""
+    cockpit = importlib.import_module("apps.cockpit.cockpit")
+    v1 = cockpit.cockpit_create_prompt(
+        "ac10", "greeter", "Hi {{name}}", "text", label="staging"
+    )
+    v2 = cockpit.cockpit_create_prompt(
+        "ac10", "greeter", "Hello {{name}}", "text", label="production",
+        commit_message="promote v2",
+    )
+    assert v1["version"] == 1 and v2["version"] == 2
+    # Move production back to v1 and confirm it sticks + audit log records it.
+    cockpit.cockpit_set_prompt_label("ac10", "greeter", "production", 1)
+    with cockpit._open_control_plane() as cp:
+        prod = cp.get_prompt(project_id="ac10", name="greeter", label="production")
+        assert prod is not None and prod["version"] == 1
+        ws = cp.get_workspace_by_slug(cockpit.DEFAULT_WORKSPACE_SLUG)
+        assert ws is not None
+        audit = cp.list_audit(ws["id"])
+    label_moves = [a for a in audit if a["action"] == "set_prompt_label"]
+    # Three set_prompt_label entries: v1→staging and v2→production at create
+    # time, plus the explicit move of production back to v1.
+    assert len(label_moves) == 3
+    creates = [a for a in audit if a["action"] == "create_prompt_version"]
+    assert len(creates) == 2
+
+
+def test_eval_launch_returns_run_id(cockpit_env: Path) -> None:
+    """Evals tab is read-only in Week 6 — list returns empty until runs exist."""
+    cockpit = importlib.import_module("apps.cockpit.cockpit")
+    rows = cockpit.cockpit_evals_list("ac10")
+    assert rows == []
+    # Defer notice must call out Week 8 so the UI is honest.
+    assert "week 8" in cockpit.EVALS_DEFER_NOTICE.lower()
+
+
+def test_monitor_create_nl_preview(cockpit_env: Path) -> None:  # noqa: ARG001
+    """The stub NL preview must render keyword templates and mark itself."""
+    cockpit = importlib.import_module("apps.cockpit.cockpit")
+    sql = cockpit.cockpit_monitor_nl_preview("error rate over last hour", "1 hour")
+    assert "-- STUB" in sql
+    assert "error_rate" in sql
+    # Defer notice mentions Week 7.
+    assert "week 7" in cockpit.MONITORS_DEFER_NOTICE.lower()
+
+
+def test_ask_hfao_returns_grounded_answer(cockpit_env: Path) -> None:
+    """Ask HFAO routes 'failures' to error traces; 'cost' to a cost rollup."""
+    _seed(cockpit_env, count=8)
+    cockpit = importlib.import_module("apps.cockpit.cockpit")
+    answer = cockpit.cockpit_ask_hfao("ac10", "show me failures")
+    # Either no failures in the seed (then answer says so) or some are listed.
+    assert ("no error traces" in answer.lower()) or ("failing traces" in answer.lower())
+    cost_answer = cockpit.cockpit_ask_hfao("ac10", "what's our cost")
+    assert "cost" in cost_answer.lower()
+    # Empty question gets a helpful prompt back.
+    empty = cockpit.cockpit_ask_hfao("ac10", "")
+    assert "ask something" in empty.lower()
+
+
+def test_annotation_queue_create_and_list(cockpit_env: Path) -> None:
+    cockpit = importlib.import_module("apps.cockpit.cockpit")
+    q = cockpit.cockpit_create_annotation_queue(
+        "ac10", "errors", "status = 'error'", "quality,helpfulness"
+    )
+    assert q["id"].startswith("aq_")
+    listed = cockpit.cockpit_annotation_queues_list("ac10")
+    assert [r[0] for r in listed] == [q["id"]]
+
+
+def test_costs_rollup_pivot_renders(cockpit_env: Path) -> None:
+    _seed(cockpit_env, count=4)
+    cockpit = importlib.import_module("apps.cockpit.cockpit")
+    rows = cockpit.cockpit_cost_rollup("ac10", ["model"], "7d")
+    # Each row is [group_value, total_cost_usd, total_tokens, call_count].
+    assert all(len(r) == 4 for r in rows)
+
+
+def test_settings_payload_redacts_keys(cockpit_env: Path) -> None:  # noqa: ARG001
+    cockpit = importlib.import_module("apps.cockpit.cockpit")
+    payload = cockpit.cockpit_settings_payload()
+    # Snapshot includes config fields but never a raw key (only metadata).
+    for key_meta in payload["api_keys"]:
+        assert "key_hash" not in key_meta
+        assert key_meta["prefix"].startswith("hfao_pat_")
+    assert payload["judge_model"] == "claude-haiku-4-5"

@@ -12,6 +12,7 @@ this module raises a clear error in that case until Docker/K8s shape lands.
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import sqlite3
 import threading
@@ -104,6 +105,27 @@ CREATE TABLE IF NOT EXISTS audit_log (
     target      TEXT NOT NULL,
     details     TEXT NOT NULL DEFAULT '{}',
     at          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS annotation_queues (
+    project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    id           TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    filter_query TEXT NOT NULL,
+    score_schema TEXT NOT NULL DEFAULT '[]',   -- JSON array of score names
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (project_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS annotation_items (
+    queue_id       TEXT NOT NULL,
+    trace_id       TEXT NOT NULL,
+    observation_id TEXT NOT NULL DEFAULT '',   -- '' sentinel for trace-level items (§4.5)
+    assigned_to    TEXT,
+    status         TEXT NOT NULL DEFAULT 'pending'
+                     CHECK (status IN ('pending','in_progress','completed','skipped')),
+    completed_at   TEXT,
+    PRIMARY KEY (queue_id, trace_id, observation_id)
 );
 """
 
@@ -199,6 +221,24 @@ class ControlPlane:
                 (pid, workspace_id, slug, name, _now()),
             )
         return self.get_project(pid)
+
+    def create_project_with_id(
+        self, *, project_id: str, workspace_id: str, slug: str, name: str
+    ) -> dict[str, Any]:
+        """Insert a project with a caller-supplied id.
+
+        Used by the cockpit's single-binary auto-bootstrap (``_ensure_project``)
+        when an event already references a project_id that the control plane
+        has never seen — the literal id must be preserved so the events table
+        and the ``projects`` row stay joined.
+        """
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO projects (id, workspace_id, slug, name, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (project_id, workspace_id, slug, name, _now()),
+            )
+        return self.get_project(project_id)
 
     def get_project(self, project_id: str) -> dict[str, Any]:
         with self._lock:
@@ -356,6 +396,204 @@ class ControlPlane:
                 (project_id, name),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_prompts(self, *, project_id: str) -> list[dict[str, Any]]:
+        """Latest version of every prompt in a project (one row per name).
+
+        Backs the §9.2 ``list_prompts`` MCP tool.
+        """
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT pv.* FROM prompt_versions pv "
+                "JOIN (SELECT name, MAX(version) AS v FROM prompt_versions "
+                "      WHERE project_id = ? GROUP BY name) latest "
+                "  ON latest.name = pv.name AND latest.v = pv.version "
+                "WHERE pv.project_id = ? ORDER BY pv.name",
+                (project_id, project_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- datasets (§4.1 Dataset / DatasetItem) ----
+
+    def create_dataset(
+        self, *, project_id: str, name: str, description: str | None = None
+    ) -> dict[str, Any]:
+        did = _new_id("ds")
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO datasets (project_id, id, name, description, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (project_id, did, name, description, _now()),
+            )
+        return self.get_dataset(project_id=project_id, dataset_id=did)
+
+    def get_dataset(self, *, project_id: str, dataset_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._con.execute(
+                "SELECT * FROM datasets WHERE project_id = ? AND id = ?",
+                (project_id, dataset_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError((project_id, dataset_id))
+        return dict(row)
+
+    def list_datasets(self, *, project_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT * FROM datasets WHERE project_id = ? ORDER BY created_at",
+                (project_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_dataset_item(
+        self,
+        *,
+        project_id: str,
+        dataset_id: str,
+        input: str,  # noqa: A002 — matches SPEC §4.1 DatasetItem.input
+        expected_output: str | None = None,
+        metadata: dict[str, str] | None = None,
+        source_trace_id: str | None = None,
+        source_observation_id: str | None = None,
+    ) -> dict[str, Any]:
+        # Ensure the dataset exists (and is in this project) before adding items.
+        self.get_dataset(project_id=project_id, dataset_id=dataset_id)
+        item_id = _new_id("dsi")
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO dataset_items (project_id, dataset_id, id, input, "
+                "expected_output, metadata, source_trace_id, source_observation_id, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    project_id,
+                    dataset_id,
+                    item_id,
+                    input,
+                    expected_output,
+                    json.dumps(metadata or {}),
+                    source_trace_id,
+                    source_observation_id,
+                    _now(),
+                ),
+            )
+            row = self._con.execute(
+                "SELECT * FROM dataset_items WHERE project_id = ? AND dataset_id = ? "
+                "AND id = ?",
+                (project_id, dataset_id, item_id),
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def list_dataset_items(
+        self, *, project_id: str, dataset_id: str
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT * FROM dataset_items WHERE project_id = ? AND dataset_id = ? "
+                "ORDER BY created_at",
+                (project_id, dataset_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- annotation queues (§4.1 AnnotationQueue / AnnotationItem) ----
+
+    def create_annotation_queue(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        filter_query: str = "1=1",
+        score_schema: list[str] | None = None,
+    ) -> dict[str, Any]:
+        qid = _new_id("aq")
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO annotation_queues (project_id, id, name, filter_query, "
+                "score_schema, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    project_id,
+                    qid,
+                    name,
+                    filter_query,
+                    json.dumps(score_schema or []),
+                    _now(),
+                ),
+            )
+        return self.get_annotation_queue(project_id=project_id, queue_id=qid)
+
+    def get_annotation_queue(
+        self, *, project_id: str, queue_id: str
+    ) -> dict[str, Any]:
+        with self._lock:
+            row = self._con.execute(
+                "SELECT * FROM annotation_queues WHERE project_id = ? AND id = ?",
+                (project_id, queue_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError((project_id, queue_id))
+        return dict(row)
+
+    def list_annotation_queues(self, *, project_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT * FROM annotation_queues WHERE project_id = ? ORDER BY created_at",
+                (project_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def enqueue_annotation_item(
+        self,
+        *,
+        queue_id: str,
+        trace_id: str,
+        observation_id: str | None = None,
+        assigned_to: str | None = None,
+        status: str = "pending",
+    ) -> dict[str, Any]:
+        obs = observation_id or ""
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO annotation_items (queue_id, trace_id, observation_id, "
+                "assigned_to, status) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (queue_id, trace_id, observation_id) DO UPDATE SET "
+                "assigned_to = excluded.assigned_to, status = excluded.status",
+                (queue_id, trace_id, obs, assigned_to, status),
+            )
+            row = self._con.execute(
+                "SELECT * FROM annotation_items WHERE queue_id = ? AND trace_id = ? "
+                "AND observation_id = ?",
+                (queue_id, trace_id, obs),
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def list_annotation_items(
+        self, *, queue_id: str, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM annotation_items WHERE queue_id = ?"
+        params: list[str] = [queue_id]
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+        with self._lock:
+            rows = self._con.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_annotation_item_status(
+        self,
+        *,
+        queue_id: str,
+        trace_id: str,
+        observation_id: str | None,
+        status: str,
+        completed_at: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._con.execute(
+                "UPDATE annotation_items SET status = ?, completed_at = ? "
+                "WHERE queue_id = ? AND trace_id = ? AND observation_id = ?",
+                (status, completed_at, queue_id, trace_id, observation_id or ""),
+            )
 
     # ---- audit log ----
 

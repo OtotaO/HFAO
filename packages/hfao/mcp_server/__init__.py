@@ -1,4 +1,21 @@
-"""MCP server module."""
-from hfao.mcp_server.server import create_mcp_server, run
+"""HFAO-as-MCP server (SPEC §9).
 
-__all__ = ["create_mcp_server", "run"]
+FastMCP Streamable HTTP surface exposing HFAO's read tools plus the gated
+``score_observation`` write tool, with per-request workspace isolation.
+"""
+
+from hfao.mcp_server.server import (
+    DEFAULT_MCP_PORT,
+    MCP_PATH,
+    build_asgi_app,
+    build_server,
+    serve,
+)
+
+__all__ = [
+    "DEFAULT_MCP_PORT",
+    "MCP_PATH",
+    "build_asgi_app",
+    "build_server",
+    "serve",
+]
