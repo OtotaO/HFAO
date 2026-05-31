@@ -633,6 +633,59 @@ def cockpit_settings_payload() -> dict[str, Any]:
     }
 
 
+def cockpit_change_setting(
+    project: str,
+    *,
+    actor_role: str,
+    actor_key_id: str | None,
+    setting: str,
+    value: str,
+) -> dict[str, Any]:
+    """Apply a settings change with RBAC + audit (§13.2, §13.5).
+
+    Used by the AC §13 tests and the Settings tab's "change redaction
+    profile" / "change judge model" forms. Persistence of the new value
+    lives in the control plane's workspace settings (future); for now we
+    enforce the gate and record the audit so the contract is exercised
+    end-to-end. The Week 7 settings store will add the persistence side.
+    """
+    from hfao.auth.rbac import Permission, Role, require_permission
+
+    permission = _SETTING_PERMISSIONS.get(setting, Permission.SETTINGS_WRITE)
+    require_permission(cast(Role, actor_role), permission)
+    project = project or DEFAULT_PROJECT
+    with _open_control_plane() as cp:
+        _ensure_project(cp, project)
+        workspace_id = cp.get_project(project)["workspace_id"]
+        cp.record_audit(
+            workspace_id=workspace_id,
+            actor=actor_key_id or COCKPIT_ACTOR,
+            action=f"settings:{setting}",
+            target=f"{project}/{setting}",
+            details=json.dumps({"value": value}),
+        )
+    return {"setting": setting, "value": value, "actor_role": actor_role}
+
+
+_SETTING_PERMISSIONS: dict[str, Any] = {}
+
+
+def _init_setting_permissions() -> None:
+    from hfao.auth.rbac import Permission
+
+    _SETTING_PERMISSIONS.update(
+        {
+            "redaction_profile": Permission.REDACTION_CONFIG_WRITE,
+            "sso_config": Permission.SSO_CONFIG_WRITE,
+            "judge_model": Permission.SETTINGS_WRITE,
+            "judge_provider": Permission.SETTINGS_WRITE,
+        }
+    )
+
+
+_init_setting_permissions()
+
+
 # Ask HFAO (§10.2 tab 12) — local copilot router over the §9 MCP surface.
 
 
