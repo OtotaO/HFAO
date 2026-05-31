@@ -253,3 +253,57 @@ def test_control_plane_prompt_versioning_and_labels(tmp_path: Path) -> None:
     )
     prod = cp.get_prompt(project_id=proj["id"], name="greeter", label="production")
     assert prod is not None and prod["version"] == 1
+
+
+def test_control_plane_dataset_crud(tmp_path: Path) -> None:
+    cp = ControlPlane(f"sqlite:///{tmp_path / 'cp.db'}")
+    cp.init_schema()
+    ws = cp.create_workspace(slug="acme", name="Acme")
+    proj = cp.create_project(workspace_id=ws["id"], slug="demo", name="Demo")
+    ds = cp.create_dataset(project_id=proj["id"], name="goldens", description="d")
+    assert ds["id"].startswith("ds_")
+    assert cp.get_dataset(project_id=proj["id"], dataset_id=ds["id"])["name"] == "goldens"
+    item = cp.add_dataset_item(
+        project_id=proj["id"],
+        dataset_id=ds["id"],
+        input='{"q": "2+2"}',
+        expected_output='{"a": "4"}',
+        metadata={"split": "train"},
+        source_trace_id="t1",
+    )
+    assert item["source_trace_id"] == "t1"
+    items = cp.list_dataset_items(project_id=proj["id"], dataset_id=ds["id"])
+    assert len(items) == 1 and items[0]["expected_output"] == '{"a": "4"}'
+    assert [d["id"] for d in cp.list_datasets(project_id=proj["id"])] == [ds["id"]]
+    # Adding an item to a non-existent dataset is rejected.
+    with pytest.raises(KeyError):
+        cp.add_dataset_item(project_id=proj["id"], dataset_id="ds_nope", input="x")
+
+
+def test_control_plane_annotation_queue_crud(tmp_path: Path) -> None:
+    cp = ControlPlane(f"sqlite:///{tmp_path / 'cp.db'}")
+    cp.init_schema()
+    ws = cp.create_workspace(slug="acme", name="Acme")
+    proj = cp.create_project(workspace_id=ws["id"], slug="demo", name="Demo")
+    q = cp.create_annotation_queue(
+        project_id=proj["id"],
+        name="errors",
+        filter_query="status = 'error'",
+        score_schema=["quality", "helpfulness"],
+    )
+    assert q["id"].startswith("aq_")
+    assert [x["id"] for x in cp.list_annotation_queues(project_id=proj["id"])] == [q["id"]]
+    cp.enqueue_annotation_item(queue_id=q["id"], trace_id="t1")
+    cp.enqueue_annotation_item(queue_id=q["id"], trace_id="t2", observation_id="o9")
+    pending = cp.list_annotation_items(queue_id=q["id"], status="pending")
+    assert len(pending) == 2
+    cp.set_annotation_item_status(
+        queue_id=q["id"], trace_id="t1", observation_id=None,
+        status="completed", completed_at="2026-05-29T00:00:00+00:00",
+    )
+    assert len(cp.list_annotation_items(queue_id=q["id"], status="pending")) == 1
+    done = cp.list_annotation_items(queue_id=q["id"], status="completed")
+    assert len(done) == 1 and done[0]["trace_id"] == "t1"
+    # Re-enqueue is idempotent on the (queue, trace, observation) key.
+    cp.enqueue_annotation_item(queue_id=q["id"], trace_id="t2", observation_id="o9")
+    assert len(cp.list_annotation_items(queue_id=q["id"])) == 2
