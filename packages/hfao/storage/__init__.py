@@ -48,6 +48,16 @@ class StorageBackend(Protocol):
 
     def get_scores(self, project_id: str, trace_id: str) -> list[Score]: ...
 
+    def purge_old(self, project_id: str, *, before: datetime) -> dict[str, int]:
+        """Delete rows from events / scores / causal_edges where the row's
+        primary timestamp is strictly older than ``before`` (§6.4 retention).
+
+        Returns ``{'events': N, 'scores': N, 'causal_edges': N}`` row counts.
+        Project-scoped: callers loop across projects so each can have its own
+        retention policy. SQL stays in the storage backend (Appendix C rule 4).
+        """
+        ...
+
     def refresh_cost_rollup(self) -> int:
         """Re-aggregate the cost rollup table from raw events.
 

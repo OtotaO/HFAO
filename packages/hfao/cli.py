@@ -63,6 +63,18 @@ eval_app = typer.Typer(
 )
 app.add_typer(eval_app, name="eval")
 
+parquet_app = typer.Typer(
+    help="Warm-tier Parquet export (SPEC §16 Q-13).",
+    no_args_is_help=True,
+)
+app.add_typer(parquet_app, name="parquet")
+
+retention_app = typer.Typer(
+    help="Retention worker (SPEC §6.4): hot-tier + body purge.",
+    no_args_is_help=True,
+)
+app.add_typer(retention_app, name="retention")
+
 
 # ---- shared helpers ----
 
@@ -710,6 +722,237 @@ def eval_run(
     )
     if gate and result["gate_passed"] is False:
         raise typer.Exit(code=1)
+
+
+@parquet_app.command("export")
+def parquet_export(
+    out: Annotated[
+        Path,
+        typer.Argument(
+            help="Local directory or file path to write Parquet shards into.",
+        ),
+    ],
+    project: Annotated[
+        str | None,
+        typer.Option(help="Project id; defaults to HFAO_PROJECT."),
+    ] = None,
+    date_from: Annotated[
+        str | None,
+        typer.Option(
+            "--from",
+            help="ISO date/datetime lower bound (inclusive). Default: 7 days ago.",
+        ),
+    ] = None,
+    date_to: Annotated[
+        str | None,
+        typer.Option(
+            "--to",
+            help="ISO date/datetime upper bound (exclusive). Default: now.",
+        ),
+    ] = None,
+    hf_bucket: Annotated[
+        str | None,
+        typer.Option(
+            "--hf-bucket",
+            help="HF Bucket URL prefix (e.g. f8n-ai/hfao-warm). Uploads after export.",
+        ),
+    ] = None,
+) -> None:
+    """One-shot Parquet export per §16 Q-13.
+
+    Reads the closed-hour partitions of events for ``project`` over
+    [from, to) and materialises them as Parquet under
+    ``{out}/project_id={project}/year={YYYY}/month={MM}/day={DD}/hour={HH}/part-0.parquet``
+    matching the §4.4 partition convention. When ``--hf-bucket`` is set, the
+    same paths are mirrored to ``hf://buckets/{bucket}/hfao/v1/events/...``.
+
+    The continuous auto-sync worker (``storage/parquet_sync.py``) is
+    deferred to v1.1 per §16 Q-13. This command is the v1 warm-tier path.
+    """
+    from datetime import datetime, timezone
+
+    from hfao.config import HFAOConfig
+
+    cfg = HFAOConfig.from_env()
+    project_id = project or cfg.project
+
+    now_utc = datetime.now(tz=timezone.utc)
+    end = datetime.fromisoformat(date_to) if date_to else now_utc
+    start = (
+        datetime.fromisoformat(date_from)
+        if date_from
+        else end - timedelta(days=7)
+    )
+    if end <= start:
+        raise typer.BadParameter("--to must be after --from")
+
+    out.mkdir(parents=True, exist_ok=True)
+
+    with _open_backend(cfg) as backend:
+        shards = _export_duckdb_parquet(backend, project_id, start, end, out)
+
+    console = Console()
+    console.print(
+        f"[green]Exported {len(shards)} shard(s)[/green] from "
+        f"{start.isoformat()} to {end.isoformat()} into {out}"
+    )
+
+    if hf_bucket:
+        _upload_shards_to_hf(out, hf_bucket, project_id, shards)
+        console.print(
+            f"[green]Uploaded shards to hf://{hf_bucket}/hfao/v1/events/[/green]"
+        )
+
+
+def _export_duckdb_parquet(
+    backend: DuckDBBackend,
+    project_id: str,
+    start: datetime,
+    end: datetime,
+    out: Path,
+) -> list[Path]:
+    """Materialise per-hour Parquet shards. Returns the written paths."""
+    shards: list[Path] = []
+    cur = start.replace(minute=0, second=0, microsecond=0)
+    while cur < end:
+        hour_end = cur + timedelta(hours=1)
+        partition = (
+            out
+            / f"project_id={project_id}"
+            / f"year={cur.year:04d}"
+            / f"month={cur.month:02d}"
+            / f"day={cur.day:02d}"
+            / f"hour={cur.hour:02d}"
+        )
+        partition.mkdir(parents=True, exist_ok=True)
+        shard = partition / "part-0.parquet"
+        rows = backend.export_events_to_parquet(
+            project_id, start=cur, end=hour_end, out_path=shard.as_posix()
+        )
+        if rows > 0:
+            shards.append(shard)
+        elif shard.exists():
+            shard.unlink()
+        cur = hour_end
+    return shards
+
+
+def _upload_shards_to_hf(
+    out: Path, hf_bucket: str, project_id: str, shards: list[Path]
+) -> None:
+    """Mirror local shards to an HF Bucket under hfao/v1/events/.
+
+    ``project_id`` is already embedded in the local partition path
+    (``out/project_id={project_id}/...``); the relative paths preserve it
+    when uploaded, so the parameter is captured here only to make the
+    contract explicit at the call site.
+    """
+    del project_id
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    for shard in shards:
+        rel = shard.relative_to(out)
+        remote = f"hfao/v1/events/{rel.as_posix()}"
+        api.upload_file(
+            path_or_fileobj=str(shard),
+            path_in_repo=remote,
+            repo_id=hf_bucket,
+            repo_type="dataset",
+        )
+
+
+@retention_app.command("set")
+def retention_set(
+    project: Annotated[str, typer.Argument(help="Project id.")],
+    hot_days: Annotated[int, typer.Option(help="Hot-tier retention.")] = 30,
+    warm_days: Annotated[int, typer.Option(help="Warm-tier retention.")] = 365,
+    bodies_days: Annotated[int, typer.Option(help="Offloaded-body retention.")] = 90,
+    enabled: Annotated[bool, typer.Option(help="Enable retention for this project.")] = True,
+) -> None:
+    """Create or update a project's retention policy (§6.4)."""
+    from hfao.config import HFAOConfig
+    from hfao.storage.control_plane import ControlPlane
+
+    cfg = HFAOConfig.from_env()
+    cp = ControlPlane(cfg.control_plane_dsn)
+    cp.init_schema()
+    try:
+        policy = cp.upsert_retention_policy(
+            project_id=project,
+            hot_days=hot_days,
+            warm_days=warm_days,
+            bodies_days=bodies_days,
+            enabled=enabled,
+        )
+    finally:
+        cp.close()
+    Console().print(
+        f"[green]Saved retention policy[/green] for project {project}: {policy}"
+    )
+
+
+@retention_app.command("run")
+def retention_run(
+    project: Annotated[
+        str | None,
+        typer.Option(help="Project id; default: run for every project with a policy."),
+    ] = None,
+) -> None:
+    """Run one retention pass against the configured projects (§6.4)."""
+    from hfao.compute.retention import run_once
+    from hfao.config import HFAOConfig
+    from hfao.storage.control_plane import ControlPlane
+
+    cfg = HFAOConfig.from_env()
+    bodies_root = Path(cfg.bodies_path) if cfg.bodies_path else None
+    with _open_backend(cfg) as backend:
+        cp = ControlPlane(cfg.control_plane_dsn)
+        cp.init_schema()
+        try:
+            del project  # the worker uses all enabled policies in one pass
+            result = run_once(backend, cp, bodies_root=bodies_root)
+        finally:
+            cp.close()
+    console = Console()
+    console.print(
+        f"[green]Retention pass completed in "
+        f"{(result.finished_at - result.started_at).total_seconds():.2f}s[/green]"
+    )
+    for pid, counts in result.per_project.items():
+        console.print(
+            f"  {pid}: events={counts['events']} "
+            f"scores={counts['scores']} causal_edges={counts['causal_edges']}"
+        )
+    console.print(f"  body files pruned: {result.bodies_pruned}")
+    if result.errors:
+        for err in result.errors:
+            console.print(f"  [yellow]error:[/yellow] {err}")
+
+
+@retention_app.command("show")
+def retention_show(
+    project: Annotated[
+        str | None,
+        typer.Option(help="Project id; default: list all policies."),
+    ] = None,
+) -> None:
+    """Print the retention policy for a project (or all)."""
+    from hfao.config import HFAOConfig
+    from hfao.storage.control_plane import ControlPlane
+
+    cfg = HFAOConfig.from_env()
+    cp = ControlPlane(cfg.control_plane_dsn)
+    cp.init_schema()
+    console = Console()
+    try:
+        if project:
+            console.print(cp.get_retention_policy(project_id=project))
+        else:
+            for p in cp.list_retention_policies():
+                console.print(p)
+    finally:
+        cp.close()
 
 
 __all__ = ["app", "render_dashboard"]
