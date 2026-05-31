@@ -294,6 +294,17 @@ class ClickHouseBackend:
             )
         return out
 
+    def refresh_cost_rollup(self) -> int:
+        """No-op: ``cost_daily_mv`` is a ``SummingMergeTree`` materialized view
+        that ClickHouse keeps current as events are inserted (§8.3). The
+        method exists to satisfy the :class:`StorageBackend` protocol and to
+        let cross-backend workers call it without branching."""
+        try:
+            row = self._client.query("SELECT count() FROM cost_daily_mv").result_rows
+            return int(row[0][0]) if row else 0
+        except Exception:  # noqa: BLE001 — non-fatal informational return
+            return 0
+
     def cost_rollup(
         self,
         project_id: str,

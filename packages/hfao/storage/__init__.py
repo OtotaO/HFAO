@@ -48,6 +48,17 @@ class StorageBackend(Protocol):
 
     def get_scores(self, project_id: str, trace_id: str) -> list[Score]: ...
 
+    def refresh_cost_rollup(self) -> int:
+        """Re-aggregate the cost rollup table from raw events.
+
+        DuckDB rebuilds the ``cost_daily`` table from ``events_current``
+        (§8.3). ClickHouse's ``cost_daily_mv`` is auto-refreshed by the
+        ``SummingMergeTree`` engine, so this is a no-op there. Returns the
+        number of rollup rows after refresh (informational; callers usually
+        ignore it).
+        """
+        ...
+
     def cost_rollup(
         self,
         project_id: str,

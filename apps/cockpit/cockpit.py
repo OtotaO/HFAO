@@ -497,63 +497,85 @@ def cockpit_create_annotation_queue(
     return queue
 
 
-# Monitors (§10.2 tab 9) — read-only list until Week 7 engine lands.
+# Monitors (§10.2 tab 9) — backed by hfao.compute.monitor (Week 7).
 
 
-def cockpit_monitors_list(project: str) -> list[list[Any]]:  # noqa: ARG001
-    """No monitor table yet; engine lands in Week 7 (§15.2). Returns []."""
-    return []
+def cockpit_monitors_list(project: str) -> list[list[Any]]:
+    """Rows for the Monitors tab table."""
+    project = project or DEFAULT_PROJECT
+    with _open_control_plane() as cp:
+        try:
+            cp.get_project(project)
+        except KeyError:
+            return []
+        monitors = cp.list_monitors(project_id=project)
+    return [
+        [
+            m["id"],
+            m["name"],
+            m["window"],
+            f"{float(m['threshold']):.4f}",
+            "yes" if m["enabled"] else "no",
+        ]
+        for m in monitors
+    ]
 
 
-_MONITOR_TEMPLATES: tuple[tuple[tuple[str, ...], str], ...] = (
-    (
-        ("error", "rate"),
-        "SELECT count() FILTER (WHERE status = 'error') * 1.0 / count() AS error_rate "
-        "FROM events_current WHERE start_time >= now() - INTERVAL '{window}'",
-    ),
-    (
-        ("cost",),
-        "SELECT sum(total_cost_usd) AS total_cost_usd "
-        "FROM events_current WHERE start_time >= now() - INTERVAL '{window}'",
-    ),
-    (
-        ("latency", "p95"),
-        "SELECT quantile_cont(duration_ms, 0.95) AS p95_latency_ms "
-        "FROM events_current WHERE start_time >= now() - INTERVAL '{window}'",
-    ),
-    (
-        ("token", "usage"),
-        "SELECT sum(total_tokens) AS total_tokens "
-        "FROM events_current WHERE start_time >= now() - INTERVAL '{window}'",
-    ),
-)
+def cockpit_create_monitor(
+    project: str,
+    name: str,
+    nl_description: str,
+    threshold: float,
+    operator: str = "gt",
+    window: str = "1h",
+    channels: str = "",
+) -> dict[str, Any]:
+    """Create a monitor: NL → SQL via the keyword template generator, persist."""
+    from hfao.compute.monitor import create_monitor
+
+    project = project or DEFAULT_PROJECT
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("monitor name is required")
+    parsed_channels = [c.strip() for c in (channels or "").split(",") if c.strip()]
+    with _open_control_plane() as cp:
+        pid = _ensure_project(cp, project)
+        monitor = create_monitor(
+            cp,
+            project_id=pid,
+            name=name,
+            nl_description=nl_description,
+            threshold=float(threshold),
+            operator=operator,
+            window=window,
+            channels=parsed_channels,
+        )
+        cp.record_audit(
+            workspace_id=cp.get_project(pid)["workspace_id"],
+            actor=COCKPIT_ACTOR,
+            action="create_monitor",
+            target=f"{pid}/{monitor['id']}",
+            details=json.dumps(
+                {"window": window, "operator": operator, "threshold": float(threshold)}
+            ),
+        )
+    return monitor
 
 
-def cockpit_monitor_nl_preview(nl: str, window: str = "1 hour") -> str:
-    """Keyword-template NL→SQL preview.
+def cockpit_monitor_nl_preview(nl: str, window: str = "1h") -> str:
+    """NL→SQL preview using the production keyword-template generator."""
+    from hfao.compute.monitor import KeywordTemplateGenerator
 
-    The Week 7 monitor engine (``hfao.compute.monitor``) replaces this with a
-    judge-model-driven NL→SQL pass; this stub exists so the Monitors tab
-    has a visible preview surface in Week 6. The returned string carries an
-    explicit ``-- STUB --`` marker so it never gets mistaken for the real
-    engine's output.
-    """
-    text = (nl or "").lower()
-    for keywords, template in _MONITOR_TEMPLATES:
-        if all(k in text for k in keywords):
-            return f"-- STUB (Week 7 engine replaces this)\n{template.format(window=window)}"
-    return (
-        "-- STUB (Week 7 engine replaces this)\n"
-        "-- No keyword template matched. Try: 'error rate', 'cost', "
-        "'latency p95', 'token usage'."
-    )
+    result = KeywordTemplateGenerator().generate(description=nl or "", window=window)
+    return f"-- {result.backend} (matched={result.matched_template})\n{result.sql}"
 
 
 MONITORS_DEFER_NOTICE = (
-    "The monitor engine lands in **Week 7** (§15.2; resolved §16 Q-17). This "
-    "tab is read-only for now and the NL→SQL preview below is a keyword-template "
-    "stub clearly marked with `-- STUB --` so it can't be mistaken for the real "
-    "engine's output."
+    "Monitors are backed by `hfao.compute.monitor` (SPEC §8.4). The "
+    "**keyword-template** SQL generator runs deterministically below; the "
+    "LLM-driven generator (`HFAO_JUDGE_PROVIDER`) is opt-in. SQL is frozen on "
+    "create — re-running NL→SQL on every tick would silently change "
+    "semantics and is explicitly not the contract."
 )
 
 
@@ -1179,15 +1201,37 @@ def _build_monitors_tab(project: gr.Dropdown, refresh_btn: gr.Button) -> None:
             value="error rate over the last hour",
             scale=3,
         )
-        window_box = gr.Textbox(label="Window", value="1 hour", scale=1)
+        window_box = gr.Textbox(label="Window (e.g. 5m, 1h, 24h)", value="1h", scale=1)
         preview_btn = gr.Button("Preview SQL", scale=1)
-    preview = gr.Code(label="SQL preview (STUB)", language="sql")
+    preview = gr.Code(label="Generated SQL", language="sql")
+    with gr.Accordion("Create monitor", open=False):
+        with gr.Row():
+            name_box = gr.Textbox(label="Monitor name", scale=2)
+            operator_dd = gr.Dropdown(
+                choices=["gt", "lt", "gte", "lte", "eq"], value="gt",
+                label="Operator", scale=1,
+            )
+            threshold_box = gr.Number(label="Threshold", value=0.05, scale=1)
+            channels_box = gr.Textbox(
+                label="Channels (comma-separated webhook URLs)", scale=2
+            )
+            create_btn = gr.Button("Create", variant="primary", scale=1)
+        create_msg = gr.Markdown()
 
     def _list(p: str) -> list[list[Any]]:
         return cockpit_monitors_list(p)
 
     def _preview(nl: str, window: str) -> str:
         return cockpit_monitor_nl_preview(nl, window)
+
+    def _create(
+        p: str, n: str, nl: str, thr: float, op: str, w: str, ch: str
+    ) -> tuple[str, list[list[Any]]]:
+        try:
+            m = cockpit_create_monitor(p, n, nl, float(thr), op, w, ch)
+            return f"Created monitor `{m['id']}` ({m['name']}).", cockpit_monitors_list(p)
+        except (ValueError, KeyError) as exc:
+            return f"⚠ {exc}", cockpit_monitors_list(p)
 
     project.change(_list, inputs=[project], outputs=[table],
                    api_name="cockpit.read.monitors")
@@ -1197,6 +1241,15 @@ def _build_monitors_tab(project: gr.Dropdown, refresh_btn: gr.Button) -> None:
         inputs=[nl_box, window_box],
         outputs=[preview],
         api_name="cockpit.read.monitor_preview",
+    )
+    create_btn.click(
+        _create,
+        inputs=[
+            project, name_box, nl_box, threshold_box, operator_dd, window_box,
+            channels_box,
+        ],
+        outputs=[create_msg, table],
+        api_name="cockpit.write.create_monitor",
     )
 
 

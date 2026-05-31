@@ -263,13 +263,17 @@ def test_eval_launch_returns_run_id(cockpit_env: Path) -> None:
 
 
 def test_monitor_create_nl_preview(cockpit_env: Path) -> None:  # noqa: ARG001
-    """The stub NL preview must render keyword templates and mark itself."""
+    """The NL preview routes to the real keyword-template generator."""
     cockpit = importlib.import_module("apps.cockpit.cockpit")
-    sql = cockpit.cockpit_monitor_nl_preview("error rate over last hour", "1 hour")
-    assert "-- STUB" in sql
-    assert "error_rate" in sql
-    # Defer notice mentions Week 7.
-    assert "week 7" in cockpit.MONITORS_DEFER_NOTICE.lower()
+    sql = cockpit.cockpit_monitor_nl_preview("error rate over last hour", "1h")
+    # Real generator output: header annotates the backend + matched template,
+    # then the SQL itself uses canonical schema names.
+    assert "keyword_template" in sql
+    assert "matched=error_rate" in sql
+    assert "events_current" in sql
+    assert "1 HOUR" in sql
+    # Defer notice now points at the live engine.
+    assert "hfao.compute.monitor" in cockpit.MONITORS_DEFER_NOTICE
 
 
 def test_ask_hfao_returns_grounded_answer(cockpit_env: Path) -> None:
