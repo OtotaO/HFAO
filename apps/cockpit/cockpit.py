@@ -866,6 +866,7 @@ def build_blocks() -> gr.Blocks:
     return demo
 
 
+
 def _build_home_tab(project: gr.Dropdown, refresh_btn: gr.Button) -> None:
     with gr.Row():
         traces_card = gr.Number(label="Traces (last 200)", value=0, interactive=False)
