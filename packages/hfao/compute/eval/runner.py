@@ -184,10 +184,10 @@ def run_offline(
 
     for item in items:
         ctx = EvalContext(
-            input=_maybe_json(item["input"]),
+            input=maybe_json(item["input"]),
             output=None,
-            expected_output=_maybe_json(item.get("expected_output")),
-            metadata=_maybe_json_dict(item.get("metadata") or "{}") | {
+            expected_output=maybe_json(item.get("expected_output")),
+            metadata=maybe_json_dict(item.get("metadata") or "{}") | {
                 "dataset_item_id": item["id"],
             },
         )
@@ -243,7 +243,7 @@ def run_offline(
     return OfflineResult(eval_run=eval_run, scores=all_scores)
 
 
-def _maybe_json(raw: Any) -> Any:
+def maybe_json(raw: Any) -> Any:
     """Parse JSON when ``raw`` is a string that looks like JSON; else return as-is."""
     if not isinstance(raw, str):
         return raw
@@ -256,10 +256,10 @@ def _maybe_json(raw: Any) -> Any:
         return raw
 
 
-def _maybe_json_dict(raw: Any) -> dict[str, Any]:
+def maybe_json_dict(raw: Any) -> dict[str, Any]:
     from typing import cast as _cast
 
-    parsed = _maybe_json(raw)
+    parsed = maybe_json(raw)
     if isinstance(parsed, dict):
         return _cast("dict[str, Any]", parsed)
     return {}

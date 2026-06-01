@@ -165,6 +165,70 @@ CREATE TABLE IF NOT EXISTS retention_policies (
     enabled       INTEGER NOT NULL DEFAULT 1,
     updated_at    TEXT NOT NULL
 );
+
+-- §16 Q-10a experiment family. Definition is immutable; Experiment is mutable
+-- runtime state with an FK to the definition (mirrors §4.1 PromptVersion /
+-- PromptLabel).
+CREATE TABLE IF NOT EXISTS experiment_definitions (
+    project_id                TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    id                        TEXT NOT NULL,
+    name                      TEXT NOT NULL,
+    description               TEXT,
+    dataset_id                TEXT NOT NULL,
+    evaluator_ids             TEXT NOT NULL,             -- JSON list[str]
+    variants                  TEXT NOT NULL,             -- JSON list[Variant]
+    held_constant             TEXT NOT NULL DEFAULT '{}',-- JSON dict[str,str]
+    planned_runs_per_variant  INTEGER NOT NULL,
+    created_by                TEXT NOT NULL,
+    created_at                TEXT NOT NULL,
+    PRIMARY KEY (project_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS experiments (
+    project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    id              TEXT NOT NULL,
+    definition_id   TEXT NOT NULL,
+    status          TEXT NOT NULL CHECK (status IN ('pending','running','complete','aborted')),
+    created_at      TEXT NOT NULL,
+    started_at      TEXT,
+    finished_at     TEXT,
+    PRIMARY KEY (project_id, id),
+    FOREIGN KEY (project_id, definition_id)
+        REFERENCES experiment_definitions(project_id, id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS experiment_pairings (
+    id                  TEXT PRIMARY KEY,
+    experiment_id       TEXT NOT NULL,
+    dataset_item_id     TEXT NOT NULL,
+    seed                INTEGER NOT NULL,
+    run_ids_by_variant  TEXT NOT NULL DEFAULT '{}'    -- JSON dict[str,str]
+);
+
+CREATE TABLE IF NOT EXISTS experiment_runs (
+    project_id     TEXT NOT NULL,
+    experiment_id  TEXT NOT NULL,
+    variant_id     TEXT NOT NULL,
+    pairing_id     TEXT,
+    trace_id       TEXT NOT NULL,
+    seed           INTEGER NOT NULL,
+    started_at     TEXT NOT NULL,
+    PRIMARY KEY (project_id, experiment_id, trace_id)
+);
+
+CREATE TABLE IF NOT EXISTS experiment_verdicts (
+    id                    TEXT PRIMARY KEY,
+    experiment_id         TEXT NOT NULL,
+    evaluator             TEXT NOT NULL,
+    ranking               TEXT NOT NULL,                -- JSON list[str]
+    mean_by_variant       TEXT NOT NULL,                -- JSON dict[str,float]
+    ci_low_by_variant     TEXT NOT NULL,                -- JSON dict[str,float]
+    ci_high_by_variant    TEXT NOT NULL,                -- JSON dict[str,float]
+    n_pairings            INTEGER NOT NULL,
+    paired_test           TEXT NOT NULL,
+    p_value               REAL,
+    computed_at           TEXT NOT NULL
+);
 """
 
 
@@ -819,6 +883,284 @@ class ControlPlane:
             rows = self._con.execute(
                 "SELECT * FROM retention_policies ORDER BY project_id"
             ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- experiments (§4.1 + §16 Q-10a) ----
+
+    def create_experiment_definition(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        dataset_id: str,
+        evaluator_ids: list[str],
+        variants: list[dict[str, Any]],
+        held_constant: dict[str, str] | None = None,
+        planned_runs_per_variant: int,
+        created_by: str,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Insert an immutable experiment definition. Returns the row."""
+        if planned_runs_per_variant <= 0:
+            raise ValueError("planned_runs_per_variant must be > 0")
+        if not variants:
+            raise ValueError("at least one variant required")
+        def_id = _new_id("expdef")
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO experiment_definitions "
+                "(project_id, id, name, description, dataset_id, evaluator_ids, "
+                "variants, held_constant, planned_runs_per_variant, created_by, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    project_id,
+                    def_id,
+                    name,
+                    description,
+                    dataset_id,
+                    json.dumps(evaluator_ids),
+                    json.dumps(variants),
+                    json.dumps(held_constant or {}),
+                    int(planned_runs_per_variant),
+                    created_by,
+                    _now(),
+                ),
+            )
+        return self.get_experiment_definition(project_id=project_id, def_id=def_id)
+
+    def get_experiment_definition(
+        self, *, project_id: str, def_id: str
+    ) -> dict[str, Any]:
+        with self._lock:
+            row = self._con.execute(
+                "SELECT * FROM experiment_definitions "
+                "WHERE project_id = ? AND id = ?",
+                (project_id, def_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError((project_id, def_id))
+        return dict(row)
+
+    def list_experiment_definitions(
+        self, *, project_id: str
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT * FROM experiment_definitions "
+                "WHERE project_id = ? ORDER BY created_at",
+                (project_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_experiment(
+        self,
+        *,
+        project_id: str,
+        definition_id: str,
+        status: str = "pending",
+    ) -> dict[str, Any]:
+        """Materialise a runtime experiment row pointing at ``definition_id``."""
+        if status not in ("pending", "running", "complete", "aborted"):
+            raise ValueError(f"invalid status: {status!r}")
+        # FK enforcement: definition must exist in this project.
+        self.get_experiment_definition(project_id=project_id, def_id=definition_id)
+        exp_id = _new_id("exp")
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO experiments (project_id, id, definition_id, status, "
+                "created_at) VALUES (?, ?, ?, ?, ?)",
+                (project_id, exp_id, definition_id, status, _now()),
+            )
+        return self.get_experiment(project_id=project_id, experiment_id=exp_id)
+
+    def get_experiment(
+        self, *, project_id: str, experiment_id: str
+    ) -> dict[str, Any]:
+        with self._lock:
+            row = self._con.execute(
+                "SELECT * FROM experiments WHERE project_id = ? AND id = ?",
+                (project_id, experiment_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError((project_id, experiment_id))
+        return dict(row)
+
+    def list_experiments(self, *, project_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT * FROM experiments WHERE project_id = ? ORDER BY created_at",
+                (project_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_experiment_status(
+        self,
+        *,
+        project_id: str,
+        experiment_id: str,
+        status: str,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> None:
+        if status not in ("pending", "running", "complete", "aborted"):
+            raise ValueError(f"invalid status: {status!r}")
+        with self._lock:
+            self._con.execute(
+                "UPDATE experiments SET status = ?, "
+                "started_at = COALESCE(?, started_at), "
+                "finished_at = COALESCE(?, finished_at) "
+                "WHERE project_id = ? AND id = ?",
+                (status, started_at, finished_at, project_id, experiment_id),
+            )
+
+    def repoint_experiment_definition(
+        self, *, project_id: str, experiment_id: str, new_definition_id: str
+    ) -> dict[str, Any]:
+        """Update an experiment's active definition_id without mutating the
+        old definition. The Q-10a.3 immutable-definition contract: changing
+        intent on a launched experiment produces a new definition row, then
+        repoints the experiment to it."""
+        self.get_experiment_definition(project_id=project_id, def_id=new_definition_id)
+        with self._lock:
+            self._con.execute(
+                "UPDATE experiments SET definition_id = ? "
+                "WHERE project_id = ? AND id = ?",
+                (new_definition_id, project_id, experiment_id),
+            )
+        return self.get_experiment(project_id=project_id, experiment_id=experiment_id)
+
+    def record_pairing(
+        self,
+        *,
+        experiment_id: str,
+        dataset_item_id: str,
+        seed: int,
+        run_ids_by_variant: dict[str, str],
+    ) -> dict[str, Any]:
+        pair_id = _new_id("pair")
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO experiment_pairings (id, experiment_id, "
+                "dataset_item_id, seed, run_ids_by_variant) VALUES (?, ?, ?, ?, ?)",
+                (
+                    pair_id,
+                    experiment_id,
+                    dataset_item_id,
+                    int(seed),
+                    json.dumps(run_ids_by_variant),
+                ),
+            )
+            row = self._con.execute(
+                "SELECT * FROM experiment_pairings WHERE id = ?", (pair_id,)
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def list_pairings(self, *, experiment_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT * FROM experiment_pairings WHERE experiment_id = ? "
+                "ORDER BY dataset_item_id, seed",
+                (experiment_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def record_experiment_run(
+        self,
+        *,
+        project_id: str,
+        experiment_id: str,
+        variant_id: str,
+        trace_id: str,
+        seed: int,
+        started_at: str,
+        pairing_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._con.execute(
+                "INSERT OR REPLACE INTO experiment_runs (project_id, experiment_id, "
+                "variant_id, pairing_id, trace_id, seed, started_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    project_id,
+                    experiment_id,
+                    variant_id,
+                    pairing_id,
+                    trace_id,
+                    int(seed),
+                    started_at,
+                ),
+            )
+            row = self._con.execute(
+                "SELECT * FROM experiment_runs WHERE project_id = ? "
+                "AND experiment_id = ? AND trace_id = ?",
+                (project_id, experiment_id, trace_id),
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def list_experiment_runs(
+        self, *, project_id: str, experiment_id: str
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT * FROM experiment_runs WHERE project_id = ? AND experiment_id = ? "
+                "ORDER BY started_at",
+                (project_id, experiment_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def record_verdict(
+        self,
+        *,
+        experiment_id: str,
+        evaluator: str,
+        ranking: list[str],
+        mean_by_variant: dict[str, float],
+        ci_low_by_variant: dict[str, float],
+        ci_high_by_variant: dict[str, float],
+        n_pairings: int,
+        paired_test: str,
+        p_value: float | None = None,
+    ) -> dict[str, Any]:
+        vid = _new_id("vrd")
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO experiment_verdicts (id, experiment_id, evaluator, "
+                "ranking, mean_by_variant, ci_low_by_variant, ci_high_by_variant, "
+                "n_pairings, paired_test, p_value, computed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    vid,
+                    experiment_id,
+                    evaluator,
+                    json.dumps(ranking),
+                    json.dumps(mean_by_variant),
+                    json.dumps(ci_low_by_variant),
+                    json.dumps(ci_high_by_variant),
+                    int(n_pairings),
+                    paired_test,
+                    p_value,
+                    _now(),
+                ),
+            )
+            row = self._con.execute(
+                "SELECT * FROM experiment_verdicts WHERE id = ?", (vid,)
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def list_verdicts(
+        self, *, experiment_id: str, evaluator: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM experiment_verdicts WHERE experiment_id = ?"
+        params: list[Any] = [experiment_id]
+        if evaluator is not None:
+            sql += " AND evaluator = ?"
+            params.append(evaluator)
+        sql += " ORDER BY computed_at DESC"
+        with self._lock:
+            rows = self._con.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     # ---- audit log ----
