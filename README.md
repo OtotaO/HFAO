@@ -167,8 +167,8 @@ This repository is built against [SPEC.md](SPEC.md) v1.0.0. Implementation is on
 | Milestone | Tag | What's done |
 |---|---|---|
 | **M1 — Walking skeleton** | `v0.1.0` | ✅ OTLP ingest, DuckDB hot tier, cockpit, MCP `list_traces`/`get_trace`, single-binary deploy |
-| **M2 — Phase 1 feature parity + Experiment primitive** | `v0.5.0` | 🚧 Causal attribution + eval engine + cost + monitors + retention + parquet export ✅; experiment runner pending Q-10a |
-| **M3 — Phase 2 differentiation** | `v1.0.0` | ⏳ Counterfactual replay, Helm chart, marquee examples |
+| **M2 — Phase 1 feature parity + Experiment primitive** | `v0.5.0` | ✅ Causal attribution · eval engine · cost rollups · monitors · retention · Parquet export · experiment runner with paired statistics. The closed eval-trace loop is operational end-to-end. |
+| **M3 — Phase 2 differentiation** | `v1.0.0` | ⏳ Counterfactual replay (Stage 2), Helm chart, marquee examples |
 
 The [§16 Open Questions](SPEC.md) ledger is the source of truth for every deviation from the original plan. Treat that file as the audit trail for "why does v1 look like this?"
 
