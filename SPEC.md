@@ -2441,6 +2441,15 @@ Three milestones, each ends with a tagged release.
   - **(e)** MCP gets `list_insights(project, since, min_severity)` and `get_insight(project, insight_id)` read tools.
   - **(f)** Daemon worker (`AnomalyWorker`, mirrors `CostRollupWorker` / `MonitorWorker` / `RetentionWorker`) ticks every 5 min by default.
   - **(g)** The Q-18 resolution itself counts as the §3 layout amendment per the original entry — `compute/anomaly.py` and `schema/insights.py` are now allowed inside the listed tree.
+- **Q-19 resolved (2026-06-04)** — Greenlight as proposed. Lands as the first post-Q-18 commit. *Concrete deliverables:*
+  - **(a)** `packages/hfao/schema/subscriptions.py` — `Subscription` Struct with `subscriber_kind ∈ {role, user, agent}` and `subscriber_id` as a free-form identifier (e.g. `"role:owner"`, `"user:alice@example.com"`, `"agent:on-call-bot"`). `match_kind` is `"*"` or an `InsightKind`; `match_signal_name` is `"*"` or a glob (`"error_rate_*"`); `match_min_severity` is a severity ladder rank.
+  - **(b)** `packages/hfao/compute/routing.py` — `InsightRouter.route(insight) -> list[Delivery]` evaluator. Pure: rule-based matching, no learning in v1. Subscriptions are fetched once per route call (test injection point) and filtered locally. The "learning *who* should see *what*" version is deferred as **Q-19-next** (not yet filed).
+  - **(c)** Control plane gains a `subscriptions` table + CRUD (`upsert_subscription`, `get_subscription`, `list_subscriptions`, `delete_subscription`). Indexed on `(project_id, match_kind, match_signal_name)` so the router can prune candidates server-side for large workspaces.
+  - **(d)** Anomaly engine and monitor engine **both** call the router on every new `Insight` / `Alert` so routing fans out uniformly. Webhook delivery reuses the monitor engine's existing `WebhookFn` interface; `agent` subscribers get the same payload via a pluggable `AgentDispatcher` injection point.
+  - **(e)** Ownership signals come from existing audit-log entries — `_owner_of_prompt(name)` returns the latest `create_prompt_version` actor; the engine respects an optional `subscriber_id="auto:prompt_owner:<prompt_name>"` form that resolves at route time. No new ownership table.
+  - **(f)** MCP gets `list_subscriptions(project)` and gated `create_subscription(project, ...)` write tools.
+  - **(g)** Cockpit Settings tab gains a Subscriptions sub-section (additive — §10.1 single-file rule preserved).
+  - **(h)** The Q-19 resolution itself counts as the §3 layout amendment — `compute/routing.py` and `schema/subscriptions.py` are now allowed inside the listed tree.
 
 ### 16.2 Q-10a draft — Experiment schema proposal block
 
