@@ -229,6 +229,30 @@ CREATE TABLE IF NOT EXISTS experiment_verdicts (
     p_value               REAL,
     computed_at           TEXT NOT NULL
 );
+
+-- §16 Q-18: append-only insight log. Engine never updates or deletes; the
+-- cockpit + MCP dedup by (project_id, signal_name, kind, observed_at::date)
+-- on render so multiple worker ticks within a day don't multiply.
+CREATE TABLE IF NOT EXISTS insights (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL,
+    severity        TEXT NOT NULL CHECK (severity IN ('info','notice','warning','critical')),
+    signal_name     TEXT NOT NULL,
+    baseline_value  REAL NOT NULL,
+    current_value   REAL NOT NULL,
+    observed_at     TEXT NOT NULL,
+    evidence_sql    TEXT NOT NULL,
+    confidence      REAL NOT NULL,
+    summary         TEXT NOT NULL DEFAULT '',
+    trace_id        TEXT,
+    metadata        TEXT NOT NULL DEFAULT '{}'    -- JSON dict[str,str]
+);
+
+CREATE INDEX IF NOT EXISTS insights_by_project_time
+    ON insights(project_id, observed_at);
+CREATE INDEX IF NOT EXISTS insights_by_signal
+    ON insights(project_id, signal_name, kind, observed_at);
 """
 
 
@@ -1162,6 +1186,116 @@ class ControlPlane:
         with self._lock:
             rows = self._con.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+
+    # ---- insights (§16 Q-18) ----
+
+    def record_insight(
+        self,
+        *,
+        project_id: str,
+        kind: str,
+        severity: str,
+        signal_name: str,
+        baseline_value: float,
+        current_value: float,
+        observed_at: str,
+        evidence_sql: str,
+        confidence: float,
+        summary: str = "",
+        trace_id: str | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Append a new insight. Engine-only path; never updates or deletes."""
+        if severity not in ("info", "notice", "warning", "critical"):
+            raise ValueError(f"invalid severity: {severity!r}")
+        iid = _new_id("ins")
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO insights (id, project_id, kind, severity, signal_name, "
+                "baseline_value, current_value, observed_at, evidence_sql, "
+                "confidence, summary, trace_id, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    iid,
+                    project_id,
+                    kind,
+                    severity,
+                    signal_name,
+                    float(baseline_value),
+                    float(current_value),
+                    observed_at,
+                    evidence_sql,
+                    float(confidence),
+                    summary,
+                    trace_id,
+                    json.dumps(metadata or {}),
+                ),
+            )
+            row = self._con.execute(
+                "SELECT * FROM insights WHERE id = ?", (iid,)
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def get_insight(
+        self, *, project_id: str, insight_id: str
+    ) -> dict[str, Any]:
+        with self._lock:
+            row = self._con.execute(
+                "SELECT * FROM insights WHERE project_id = ? AND id = ?",
+                (project_id, insight_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError((project_id, insight_id))
+        return dict(row)
+
+    def list_insights(
+        self,
+        *,
+        project_id: str,
+        since: str | None = None,
+        min_severity: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM insights WHERE project_id = ?"
+        params: list[Any] = [project_id]
+        if since is not None:
+            sql += " AND observed_at >= ?"
+            params.append(since)
+        if min_severity is not None:
+            ranks = {"info": 0, "notice": 1, "warning": 2, "critical": 3}
+            if min_severity not in ranks:
+                raise ValueError(f"invalid min_severity: {min_severity!r}")
+            allowed = [s for s, rank in ranks.items() if rank >= ranks[min_severity]]
+            sql += " AND severity IN (" + ",".join("?" * len(allowed)) + ")"
+            params.extend(allowed)
+        sql += " ORDER BY observed_at DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._con.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def already_seen_insight(
+        self,
+        *,
+        project_id: str,
+        signal_name: str,
+        kind: str,
+        observed_day: str,
+    ) -> bool:
+        """Same-(project, signal, kind) on the same UTC day already exists.
+
+        Used by the anomaly engine to avoid re-recording identical insights
+        when the worker ticks within a day. ``observed_day`` is a ``YYYY-MM-DD``
+        string compared against ``substr(observed_at, 1, 10)``.
+        """
+        with self._lock:
+            row = self._con.execute(
+                "SELECT 1 FROM insights WHERE project_id = ? AND signal_name = ? "
+                "AND kind = ? AND substr(observed_at, 1, 10) = ? LIMIT 1",
+                (project_id, signal_name, kind, observed_day),
+            ).fetchone()
+        return row is not None
 
     # ---- audit log ----
 

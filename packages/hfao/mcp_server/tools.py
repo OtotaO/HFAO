@@ -260,6 +260,34 @@ def register_tools(mcp: FastMCP, deps: Deps) -> None:  # noqa: C901 - one flat s
             group_by=group_by,
         )
 
+    @mcp.tool
+    def list_insights(
+        project: str,
+        since: str = "7d",
+        min_severity: str = "info",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Detected anomalies + replay-verified causes for ``project`` (§16 Q-18).
+
+        ``since`` is a window like ``"24h"`` / ``"7d"`` matching the existing
+        cost-by window grammar. ``min_severity`` ∈ ``{info, notice, warning,
+        critical}`` and filters by the severity ladder.
+        """
+        authorize_project(control, project)
+        since_iso = (datetime.now(timezone.utc) - parse_window(since)).isoformat()
+        return control.list_insights(
+            project_id=project,
+            since=since_iso,
+            min_severity=min_severity,
+            limit=limit,
+        )
+
+    @mcp.tool
+    def get_insight(project: str, insight_id: str) -> dict[str, Any]:
+        """Fetch one insight by id."""
+        authorize_project(control, project)
+        return control.get_insight(project_id=project, insight_id=insight_id)
+
     @mcp.resource("hfao://traces/{project}/{trace_id}")
     def trace_resource(project: str, trace_id: str) -> str:
         """Expose a trace as a readable JSON resource."""

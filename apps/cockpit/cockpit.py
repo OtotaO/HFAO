@@ -570,6 +570,89 @@ def cockpit_monitor_nl_preview(nl: str, window: str = "1h") -> str:
     return f"-- {result.backend} (matched={result.matched_template})\n{result.sql}"
 
 
+# Insights (§16 Q-18) — anomaly engine + replay-verified Q-20 edges.
+
+
+_INSIGHTS_HEADERS = [
+    "id",
+    "kind",
+    "severity",
+    "signal_name",
+    "current",
+    "baseline",
+    "confidence",
+    "observed_at",
+    "summary",
+]
+
+
+def cockpit_insights_list(
+    project: str, since: str = "7d", min_severity: str = "info"
+) -> list[list[Any]]:
+    """Rows for the Insights tab table. Honest empty-list when no project row."""
+    from datetime import datetime, timedelta, timezone
+
+    project = project or DEFAULT_PROJECT
+    with _open_control_plane() as cp:
+        try:
+            cp.get_project(project)
+        except KeyError:
+            return []
+        since_text = since.strip().lower()
+        unit = since_text[-1:] if since_text else "d"
+        try:
+            qty = int(since_text[:-1] or "7")
+        except ValueError:
+            qty = 7
+        delta_map = {"s": 1, "m": 60, "h": 3600, "d": 86_400, "w": 604_800}
+        seconds = qty * delta_map.get(unit, 86_400)
+        since_iso = (
+            datetime.now(timezone.utc) - timedelta(seconds=seconds)
+        ).isoformat()
+        try:
+            rows = cp.list_insights(
+                project_id=project,
+                since=since_iso,
+                min_severity=min_severity,
+                limit=100,
+            )
+        except (ValueError, KeyError):
+            return []
+    return [
+        [
+            r["id"],
+            r["kind"],
+            r["severity"],
+            r["signal_name"],
+            f"{float(r['current_value']):.4f}",
+            f"{float(r['baseline_value']):.4f}",
+            f"{float(r['confidence']):.2f}",
+            r["observed_at"],
+            r["summary"] or "",
+        ]
+        for r in rows
+    ]
+
+
+def cockpit_insight_detail(project: str, insight_id: str) -> dict[str, Any]:
+    """One insight, fully expanded — used by the detail panel."""
+    project = project or DEFAULT_PROJECT
+    with _open_control_plane() as cp:
+        try:
+            return cp.get_insight(project_id=project, insight_id=insight_id)
+        except KeyError:
+            return {}
+
+
+INSIGHTS_NOTICE = (
+    "Anomalies HFAO surfaces **without** being told to watch them (§16 Q-18). "
+    "Plus replay-verified decisive errors lifted from Stage-2 "
+    "`COUNTERFACTUAL_REPLAY` edges (§16 Q-20). All rows are append-only; the "
+    "table dedups by `(signal_name, kind, day)` so a single day's drift "
+    "doesn't multiply across worker ticks."
+)
+
+
 MONITORS_DEFER_NOTICE = (
     "Monitors are backed by `hfao.compute.monitor` (SPEC §8.4). The "
     "**keyword-template** SQL generator runs deterministically below; the "
@@ -880,6 +963,8 @@ def build_blocks() -> gr.Blocks:
                 _build_monitors_tab(project, refresh_btn)
             with gr.Tab("Costs"):
                 _build_costs_tab(project, refresh_btn)
+            with gr.Tab("Insights"):
+                _build_insights_tab(project, refresh_btn)
             with gr.Tab("Settings"):
                 _build_settings_tab(refresh_btn)
             with gr.Tab("Ask HFAO"):
@@ -1254,6 +1339,50 @@ def _build_monitors_tab(project: gr.Dropdown, refresh_btn: gr.Button) -> None:
 
 
 _COSTS_HEADERS_TAIL = ["total_cost_usd", "total_tokens", "call_count"]
+
+
+def _build_insights_tab(project: gr.Dropdown, refresh_btn: gr.Button) -> None:
+    gr.Markdown(INSIGHTS_NOTICE)
+    with gr.Row():
+        since_box = gr.Textbox(
+            label="Window (e.g. 24h, 7d, 30d)", value="7d", scale=1
+        )
+        sev_dd = gr.Dropdown(
+            choices=["info", "notice", "warning", "critical"],
+            value="info",
+            label="Min severity",
+            scale=1,
+        )
+    table = gr.Dataframe(headers=_INSIGHTS_HEADERS, interactive=False, wrap=True)
+    with gr.Accordion("Inspect insight", open=False):
+        with gr.Row():
+            iid_box = gr.Textbox(label="Insight id", scale=3)
+            inspect_btn = gr.Button("Open", scale=1)
+        detail = gr.JSON(label="Insight detail", visible=True)
+
+    def _list(p: str, since: str, sev: str) -> list[list[Any]]:
+        return cockpit_insights_list(p, since=since, min_severity=sev)
+
+    def _detail(p: str, iid: str) -> dict[str, Any]:
+        return cockpit_insight_detail(p, iid.strip())
+
+    project.change(
+        _list,
+        inputs=[project, since_box, sev_dd],
+        outputs=[table],
+        api_name="cockpit.read.insights",
+    )
+    refresh_btn.click(
+        _list, inputs=[project, since_box, sev_dd], outputs=[table]
+    )
+    since_box.submit(_list, inputs=[project, since_box, sev_dd], outputs=[table])
+    sev_dd.change(_list, inputs=[project, since_box, sev_dd], outputs=[table])
+    inspect_btn.click(
+        _detail,
+        inputs=[project, iid_box],
+        outputs=[detail],
+        api_name="cockpit.read.insight_detail",
+    )
 
 
 def _build_costs_tab(project: gr.Dropdown, refresh_btn: gr.Button) -> None:
