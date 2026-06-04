@@ -22,6 +22,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from hfao.compute.causal.counterfactual import (
+    Stage2Result,
+    stage2_counterfactual,
+)
 from hfao.compute.causal.judge import Judge, select_judge, stage3_judge
 from hfao.compute.causal.static import stage1_static
 
@@ -32,7 +36,7 @@ if TYPE_CHECKING:
     from hfao.storage import StorageBackend
 
 
-PHASE: Literal[1, 2] = 1
+PHASE: Literal[1, 2] = 2
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,9 @@ class AttributionResult:
     static_edge_count: int
     judge_edge_count: int
     skipped_judge: bool
+    stage2_evaluated: int = 0
+    stage2_flipped: int = 0
+    stage2_errors: tuple[str, ...] = ()
 
 
 def should_attribute(observations: list[Observation]) -> bool:
@@ -119,7 +126,22 @@ def attribute_failure(
         # ``skipped_judge`` and (re-)run with a different judge.
         skipped_judge = True
 
-    edges = list(static_edges) + list(judge_edges)
+    stage2: Stage2Result = Stage2Result()
+    if PHASE >= 2:
+        # Stage 2 ranks against the static + judge edges (combined) so the
+        # most-confident hypotheses get replay-verified first.
+        hints = list(static_edges) + list(judge_edges)
+        try:
+            stage2 = stage2_counterfactual(
+                observations,
+                hints,
+                project_id=project_id,
+                trace_id=trace_id,
+            )
+        except Exception:  # noqa: BLE001 — Stage 2 is non-fatal
+            stage2 = Stage2Result()
+
+    edges = list(static_edges) + list(judge_edges) + list(stage2.edges)
     if persist and edges:
         backend.write_causal_edges(edges)
     return AttributionResult(
@@ -128,6 +150,9 @@ def attribute_failure(
         static_edge_count=len(static_edges),
         judge_edge_count=len(judge_edges),
         skipped_judge=skipped_judge,
+        stage2_evaluated=stage2.candidates_evaluated,
+        stage2_flipped=len(stage2.edges),
+        stage2_errors=tuple(stage2.driver_errors),
     )
 
 

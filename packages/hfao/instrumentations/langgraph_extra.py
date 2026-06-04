@@ -33,8 +33,9 @@ surfaces are pure OTel and do not touch LangGraph internals.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from opentelemetry import baggage, trace
 from opentelemetry import context as otel_context
@@ -42,10 +43,13 @@ from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
 from opentelemetry.sdk.trace import Span as SDKSpan
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
     from opentelemetry.context import Context
     from opentelemetry.sdk.trace import TracerProvider
+
+    from hfao.compute.causal.counterfactual import ReplayOutcome
+    from hfao.schema.events import Observation
 
 
 _BAGGAGE_THREAD_ID = "hfao.langgraph.thread_id"
@@ -113,4 +117,118 @@ def using_thread(thread_id: str) -> Iterator[None]:
         otel_context.detach(token)
 
 
-__all__ = ["LangGraphThreadSpanProcessor", "install", "using_thread"]
+class LangGraphReplayDriver:
+    """Stage-2 replay driver for LangGraph (SPEC §16 Q-20).
+
+    Resumes from a checkpointer ``thread_id`` (recorded on the failing
+    observation's ``metadata['langgraph.thread_id']``) and re-invokes the
+    graph. The actual perturbation is a caller-supplied ``perturb`` callable;
+    default behaviour is a single retry with the same state — useful for the
+    common "transient HTTP 500" failure mode.
+
+    The LangGraph package is **not** imported here. The driver only needs the
+    caller-supplied ``graph_factory()`` to produce something with an
+    ``.invoke(state, config=...)`` method, which LangGraph graphs and the
+    test fixture both satisfy.
+
+    Typical wiring at ``hfao.init()`` time::
+
+        from hfao.compute.causal.counterfactual import register_driver
+        from hfao.instrumentations.langgraph_extra import LangGraphReplayDriver
+        register_driver(LangGraphReplayDriver(graph_factory=my_graph_factory))
+    """
+
+    framework: str = "langgraph"
+
+    def __init__(
+        self,
+        *,
+        graph_factory: Callable[[], Any] | None = None,
+        perturb: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> None:
+        self._graph_factory = graph_factory
+        identity: Callable[[dict[str, Any]], dict[str, Any]] = lambda state: state  # noqa: E731
+        self._perturb: Callable[[dict[str, Any]], dict[str, Any]] = perturb or identity
+
+    def can_replay(self, observation: Observation) -> bool:
+        md = observation.metadata or {}
+        return bool(md.get("langgraph.thread_id"))
+
+    def replay(
+        self, *, trace: Sequence[Observation], candidate: Observation
+    ) -> ReplayOutcome:
+        from hfao.compute.causal.counterfactual import ReplayOutcome
+
+        if self._graph_factory is None:
+            return ReplayOutcome(
+                framework=self.framework,
+                observation_id=candidate.observation_id,
+                flipped=False,
+                new_status=candidate.status,
+                evidence="LangGraphReplayDriver: no graph_factory wired",
+                driver_error="missing_graph_factory",
+            )
+        thread_id = (candidate.metadata or {}).get("langgraph.thread_id")
+        if not thread_id:
+            return ReplayOutcome(
+                framework=self.framework,
+                observation_id=candidate.observation_id,
+                flipped=False,
+                new_status=candidate.status,
+                evidence="LangGraphReplayDriver: candidate missing thread_id",
+                driver_error="missing_thread_id",
+            )
+        try:
+            graph = self._graph_factory()
+            config = {"configurable": {"thread_id": thread_id}}
+            empty_state: dict[str, Any] = {}
+            initial: dict[str, Any] = self._perturb(empty_state)
+            result = graph.invoke(initial, config=config)
+        except Exception as exc:  # noqa: BLE001 — orchestrator catches anyway
+            return ReplayOutcome(
+                framework=self.framework,
+                observation_id=candidate.observation_id,
+                flipped=False,
+                new_status=candidate.status,
+                evidence=f"LangGraph resume raised: {exc!s}",
+                driver_error=str(exc),
+            )
+        if isinstance(result, dict):
+            from typing import cast as _cast
+
+            flipped = not _cast("dict[str, Any]", result).get("error")
+        else:
+            flipped = True
+        del trace
+        return ReplayOutcome(
+            framework=self.framework,
+            observation_id=candidate.observation_id,
+            flipped=flipped,
+            new_status="ok" if flipped else "error",
+            evidence=(
+                "LangGraph checkpointer resume "
+                f"thread_id={thread_id!r} flipped={flipped}"
+            ),
+        )
+
+
+def install_replay_driver(
+    *,
+    graph_factory: Callable[[], Any] | None = None,
+    perturb: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+) -> LangGraphReplayDriver:
+    """Convenience: construct + register the LangGraph replay driver."""
+    from hfao.compute.causal.counterfactual import register_driver
+
+    driver = LangGraphReplayDriver(graph_factory=graph_factory, perturb=perturb)
+    register_driver(driver)
+    return driver
+
+
+__all__ = [
+    "LangGraphReplayDriver",
+    "LangGraphThreadSpanProcessor",
+    "install",
+    "install_replay_driver",
+    "using_thread",
+]

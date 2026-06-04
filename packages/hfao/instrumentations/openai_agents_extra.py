@@ -40,7 +40,10 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Sequence
+
+    from hfao.compute.causal.counterfactual import ReplayOutcome
+    from hfao.schema.events import Observation
 
 _logger = logging.getLogger(__name__)
 _TRACER_NAME = "hfao.instrumentations.openai_agents"
@@ -215,4 +218,108 @@ def _iter_attr_fields(kind: str) -> Iterator[tuple[str, Callable[[Any], object |
         yield ("guardrail.triggered", _attr("triggered"))
 
 
-__all__ = ["HFAOTracingProcessor", "install"]
+class OpenAIAgentsReplayDriver:
+    """Stage-2 replay driver for the OpenAI Agents SDK (SPEC §16 Q-20).
+
+    Resumes via ``RunState.from_string(state_json) + Runner.run`` (the
+    canonical pattern the SDK exposes for checkpointing). The serialised state
+    lives on the failing observation's
+    ``metadata['openai_agents.run_state']``; the agent constructor is
+    caller-supplied via ``agent_factory``.
+
+    The ``agents`` package is **not** imported here. The caller wires both
+    the agent and the resume callable; the driver only orchestrates.
+    """
+
+    framework: str = "openai_agents"
+
+    def __init__(
+        self,
+        *,
+        resume: Callable[[str, dict[str, Any]], Any] | None = None,
+    ) -> None:
+        """``resume(state_json, perturb) -> result`` runs the agent. The driver
+        treats a result with a ``final_output`` attribute / ``"final_output"``
+        key as a successful flip."""
+        self._resume = resume
+
+    def can_replay(self, observation: Observation) -> bool:
+        md = observation.metadata or {}
+        return bool(md.get("openai_agents.run_state"))
+
+    def replay(
+        self, *, trace: Sequence[Observation], candidate: Observation
+    ) -> ReplayOutcome:
+        from hfao.compute.causal.counterfactual import ReplayOutcome
+
+        if self._resume is None:
+            return ReplayOutcome(
+                framework=self.framework,
+                observation_id=candidate.observation_id,
+                flipped=False,
+                new_status=candidate.status,
+                evidence="OpenAIAgentsReplayDriver: no resume callable wired",
+                driver_error="missing_resume",
+            )
+        state = (candidate.metadata or {}).get("openai_agents.run_state")
+        if not state:
+            return ReplayOutcome(
+                framework=self.framework,
+                observation_id=candidate.observation_id,
+                flipped=False,
+                new_status=candidate.status,
+                evidence="OpenAIAgentsReplayDriver: candidate missing run_state",
+                driver_error="missing_run_state",
+            )
+        try:
+            result = self._resume(state, {})
+        except Exception as exc:  # noqa: BLE001
+            return ReplayOutcome(
+                framework=self.framework,
+                observation_id=candidate.observation_id,
+                flipped=False,
+                new_status=candidate.status,
+                evidence=f"Agents resume raised: {exc!s}",
+                driver_error=str(exc),
+            )
+        flipped = _agents_result_flipped(result)
+        del trace
+        return ReplayOutcome(
+            framework=self.framework,
+            observation_id=candidate.observation_id,
+            flipped=flipped,
+            new_status="ok" if flipped else "error",
+            evidence=f"OpenAI Agents SDK resume flipped={flipped}",
+        )
+
+
+def _agents_result_flipped(result: Any) -> bool:
+    """A successful Agents result has a populated ``final_output``."""
+    from typing import cast as _cast
+
+    if result is None:
+        return False
+    if isinstance(result, dict):
+        fo: Any = _cast("dict[str, Any]", result).get("final_output")
+        return fo is not None and fo != ""
+    fo = getattr(result, "final_output", None)
+    return fo is not None and fo != ""
+
+
+def install_replay_driver(
+    *, resume: Callable[[str, dict[str, Any]], Any] | None = None
+) -> OpenAIAgentsReplayDriver:
+    """Convenience: construct + register the OpenAI Agents replay driver."""
+    from hfao.compute.causal.counterfactual import register_driver
+
+    driver = OpenAIAgentsReplayDriver(resume=resume)
+    register_driver(driver)
+    return driver
+
+
+__all__ = [
+    "HFAOTracingProcessor",
+    "OpenAIAgentsReplayDriver",
+    "install",
+    "install_replay_driver",
+]

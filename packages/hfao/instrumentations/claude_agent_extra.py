@@ -32,9 +32,15 @@ only adds per-tool-call attributes; nothing here affects replay.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from hfao.compute.causal.counterfactual import ReplayOutcome
+    from hfao.schema.events import Observation
 
 
 async def _hfao_pre_tool_use(
@@ -136,4 +142,106 @@ def _serialize(value: Any) -> str:  # noqa: ANN401 — SDK payload boundary
         return repr(value)
 
 
-__all__ = ["build_hooks"]
+class ClaudeAgentReplayDriver:
+    """Stage-2 replay driver for the Claude Agent SDK (SPEC §16 Q-20).
+
+    Resumes via the SDK's ``resume_from(session_id)`` entry point. The
+    session id lives on the failing observation's
+    ``metadata['claude_agent_sdk.session_id']``. The driver delegates the
+    actual SDK call to a caller-supplied ``resume_from`` callable.
+    """
+
+    framework: str = "claude_agent_sdk"
+
+    def __init__(
+        self,
+        *,
+        resume_from: Callable[[str], Any] | None = None,
+    ) -> None:
+        self._resume_from = resume_from
+
+    def can_replay(self, observation: Observation) -> bool:
+        md = observation.metadata or {}
+        return bool(md.get("claude_agent_sdk.session_id"))
+
+    def replay(
+        self, *, trace: Sequence[Observation], candidate: Observation
+    ) -> ReplayOutcome:
+        from hfao.compute.causal.counterfactual import ReplayOutcome
+
+        if self._resume_from is None:
+            return ReplayOutcome(
+                framework=self.framework,
+                observation_id=candidate.observation_id,
+                flipped=False,
+                new_status=candidate.status,
+                evidence="ClaudeAgentReplayDriver: no resume_from callable wired",
+                driver_error="missing_resume_from",
+            )
+        session_id = (candidate.metadata or {}).get("claude_agent_sdk.session_id")
+        if not session_id:
+            return ReplayOutcome(
+                framework=self.framework,
+                observation_id=candidate.observation_id,
+                flipped=False,
+                new_status=candidate.status,
+                evidence="ClaudeAgentReplayDriver: candidate missing session_id",
+                driver_error="missing_session_id",
+            )
+        try:
+            result = self._resume_from(session_id)
+        except Exception as exc:  # noqa: BLE001
+            return ReplayOutcome(
+                framework=self.framework,
+                observation_id=candidate.observation_id,
+                flipped=False,
+                new_status=candidate.status,
+                evidence=f"Claude Agent SDK resume raised: {exc!s}",
+                driver_error=str(exc),
+            )
+        flipped = _claude_agent_result_flipped(result)
+        del trace
+        return ReplayOutcome(
+            framework=self.framework,
+            observation_id=candidate.observation_id,
+            flipped=flipped,
+            new_status="ok" if flipped else "error",
+            evidence=(
+                f"Claude Agent SDK resume_from session_id={session_id!r} "
+                f"flipped={flipped}"
+            ),
+        )
+
+
+def _claude_agent_result_flipped(result: Any) -> bool:
+    from typing import cast as _cast
+
+    if result is None:
+        return False
+    if isinstance(result, dict):
+        d = _cast("dict[str, Any]", result)
+        if d.get("error"):
+            return False
+        return d.get("status") in (None, "ok", "completed", "success")
+    status = getattr(result, "status", None)
+    if status is not None:
+        return status in ("ok", "completed", "success")
+    return getattr(result, "error", None) is None
+
+
+def install_replay_driver(
+    *, resume_from: Callable[[str], Any] | None = None,
+) -> ClaudeAgentReplayDriver:
+    """Convenience: construct + register the Claude Agent SDK replay driver."""
+    from hfao.compute.causal.counterfactual import register_driver
+
+    driver = ClaudeAgentReplayDriver(resume_from=resume_from)
+    register_driver(driver)
+    return driver
+
+
+__all__ = [
+    "ClaudeAgentReplayDriver",
+    "build_hooks",
+    "install_replay_driver",
+]
