@@ -275,10 +275,17 @@ class MonitorEngine:
         control: ControlPlane,
         *,
         webhook: WebhookFn = http_webhook,
+        router: Any = None,
+        workspace_id: str | None = None,
     ) -> None:
+        """``router`` is an optional :class:`hfao.compute.routing.InsightRouter`
+        that fans persisted alerts through subscriptions (§16 Q-19). Typed
+        ``Any`` to avoid an import cycle with ``compute.routing``."""
         self._backend = backend
         self._control = control
         self._webhook = webhook
+        self._router = router
+        self._workspace_id = workspace_id
 
     def evaluate(
         self, monitor: dict[str, Any] | Monitor
@@ -341,6 +348,32 @@ class MonitorEngine:
             channels_notified=delivered,
             delivery_errors=errors,
         )
+        # Q-19: fan the alert through the subscription router. Alerts route
+        # under the implicit kind "threshold_breach_implicit" so subscribers
+        # can target them the same way as anomaly insights of that kind.
+        if self._router is not None:
+            try:
+                self._router.route_insight(
+                    project_id=project_id,
+                    kind="threshold_breach_implicit",
+                    signal_name=str(row["name"]),
+                    severity="warning",
+                    payload={
+                        "alert_id": record.get("id"),
+                        "monitor_id": monitor_id,
+                        "project_id": project_id,
+                        "monitor_name": row["name"],
+                        "actual_value": actual,
+                        "threshold": threshold,
+                        "operator": operator,
+                        "window": row["window"],
+                        "message": message,
+                        "fired_at": fired_at,
+                    },
+                    workspace_id=self._workspace_id,
+                )
+            except Exception:  # noqa: BLE001 — routing never blocks alert persistence
+                log.exception("MonitorEngine: router failed for monitor %s", monitor_id)
         return MonitorEvaluation(
             monitor_id=monitor_id,
             actual_value=actual,
