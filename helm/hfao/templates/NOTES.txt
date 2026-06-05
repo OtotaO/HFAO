@@ -1,0 +1,34 @@
+HFAO {{ .Chart.AppVersion }} installed.
+
+Cockpit service:  {{ include "hfao.fullname" . }}-cockpit
+Ingest service:   {{ include "hfao.fullname" . }}-ingest
+
+Local access (port-forward):
+
+  kubectl port-forward svc/{{ include "hfao.fullname" . }}-cockpit \
+      {{ .Values.cockpit.service.httpPort }}:{{ .Values.cockpit.service.httpPort }} \
+      {{ .Values.cockpit.service.mcpPort }}:{{ .Values.cockpit.service.mcpPort }}
+  open http://localhost:{{ .Values.cockpit.service.httpPort }}            # cockpit
+  open http://localhost:{{ .Values.cockpit.service.mcpPort }}/mcp         # MCP
+
+  kubectl port-forward svc/{{ include "hfao.fullname" . }}-ingest \
+      {{ .Values.ingest.service.port }}:{{ .Values.ingest.service.port }}
+
+Then point any OTLP-emitting agent at http://localhost:{{ .Values.ingest.service.port }}/v1/traces.
+
+{{- if not .Values.hot.clickhouseDsn }}
+
+WARNING: hot.clickhouseDsn is not configured. The cockpit + ingest pods will
+fail to start without a reachable ClickHouse. Either set hot.clickhouseDsn to
+point at ClickHouse Cloud / Operator-managed ClickHouse, or override
+hot.backend=duckdb (single-binary shape; not recommended for K8s).
+{{- end }}
+
+{{- if not .Values.control.dsn }}
+
+WARNING: control.dsn is not configured. The cockpit + ingest pods will fail
+to start without a reachable Postgres control plane. Set control.dsn to a
+postgresql:// URI.
+{{- end }}
+
+See https://github.com/f8n-ai/hfao#deployment-shapes for the full deployment guide.

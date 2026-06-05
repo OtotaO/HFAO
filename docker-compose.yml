@@ -1,0 +1,75 @@
+# HFAO single-binary shape (SPEC §6.1).
+#
+# DuckDB embedded, SQLite control plane, local body offload. Two containers:
+#
+#   * cockpit  — Gradio UI on :7860 + MCP server on :4319.
+#   * ingest   — Granian OTLP/HTTP server on :4318. The single-binary shape
+#                shares the same DuckDB file via a named volume so both
+#                processes see writes.
+#
+# The Docker-Compose shape uses an in-memory buffer (HFAO_REDIS_URL unset)
+# rather than Redis Streams. Step up to ``docker-compose.clickhouse.yml`` to
+# get the Postgres control plane + ClickHouse hot tier + Redis buffer.
+#
+# Boot:
+#
+#     docker compose up
+#
+# Then:
+#
+#     curl -X POST http://localhost:4318/v1/traces \
+#         -H 'content-type: application/json' --data @your-otlp-batch.json
+#     open http://localhost:7860            # cockpit
+#     open http://localhost:4319/mcp        # MCP Streamable HTTP
+
+services:
+  cockpit:
+    build:
+      context: .
+      dockerfile: docker/cockpit.Dockerfile
+    image: ghcr.io/f8n-ai/hfao-cockpit:edge
+    container_name: hfao-cockpit
+    ports:
+      - "7860:7860"   # Gradio cockpit (§10.1)
+      - "4319:4319"   # MCP Streamable HTTP (§9.1)
+    environment:
+      HFAO_PROJECT: ${HFAO_PROJECT:-default}
+      HFAO_BACKEND: duckdb
+      HFAO_DUCKDB_PATH: /data/hfao.duckdb
+      HFAO_BODIES_PATH: /data/bodies
+      HFAO_CONTROL_PLANE_DSN: sqlite:////data/control.db
+      HFAO_JUDGE_PROVIDER: ${HFAO_JUDGE_PROVIDER:-anthropic}
+      HFAO_JUDGE_MODEL: ${HFAO_JUDGE_MODEL:-claude-haiku-4-5}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - hfao-data:/data
+    restart: unless-stopped
+
+  ingest:
+    build:
+      context: .
+      dockerfile: docker/ingest.Dockerfile
+    image: ghcr.io/f8n-ai/hfao-ingest:edge
+    container_name: hfao-ingest
+    ports:
+      - "4318:4318"   # OTLP/HTTP (§5.1)
+    environment:
+      HFAO_PROJECT: ${HFAO_PROJECT:-default}
+      HFAO_BACKEND: duckdb
+      HFAO_DUCKDB_PATH: /data/hfao.duckdb
+      HFAO_BODIES_PATH: /data/bodies
+      HFAO_CONTROL_PLANE_DSN: sqlite:////data/control.db
+      HFAO_INGEST_HOST: 0.0.0.0
+      HFAO_INGEST_PORT: "4318"
+    volumes:
+      - hfao-data:/data
+    restart: unless-stopped
+    depends_on:
+      cockpit:
+        condition: service_started
+
+volumes:
+  hfao-data:
+    name: hfao-data

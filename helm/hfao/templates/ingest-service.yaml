@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hfao.fullname" . }}-ingest
+  labels:
+    {{- include "hfao.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  type: {{ .Values.ingest.service.type }}
+  ports:
+    - name: otlp-http
+      port: {{ .Values.ingest.service.port }}
+      targetPort: otlp-http
+      protocol: TCP
+  selector:
+    {{- include "hfao.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest

@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hfao.fullname" . }}-cockpit
+  labels:
+    {{- include "hfao.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cockpit
+spec:
+  type: {{ .Values.cockpit.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.cockpit.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+    - name: mcp
+      port: {{ .Values.cockpit.service.mcpPort }}
+      targetPort: mcp
+      protocol: TCP
+  selector:
+    {{- include "hfao.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: cockpit

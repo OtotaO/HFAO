@@ -269,3 +269,19 @@ __all__ = [
     "create_app",
     "serve",
 ]
+
+
+def _main() -> None:  # pragma: no cover — container entrypoint
+    """``python -m hfao.ingest.server`` boots the Granian OTLP server.
+
+    Reads :class:`HFAOConfig` from the environment (Appendix A) and
+    delegates to :func:`serve`. Used by ``docker/ingest.Dockerfile`` and
+    the Helm chart's ingest Deployment.
+    """
+    from hfao.config import HFAOConfig
+
+    serve(HFAOConfig.from_env())
+
+
+if __name__ == "__main__":  # pragma: no cover
+    _main()
