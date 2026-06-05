@@ -288,6 +288,37 @@ def register_tools(mcp: FastMCP, deps: Deps) -> None:  # noqa: C901 - one flat s
         authorize_project(control, project)
         return control.get_insight(project_id=project, insight_id=insight_id)
 
+    @mcp.tool
+    def list_subscriptions(project: str) -> list[dict[str, Any]]:
+        """List routing subscriptions for ``project`` (§16 Q-19)."""
+        authorize_project(control, project)
+        return control.list_subscriptions(project_id=project)
+
+    @mcp.tool
+    def create_subscription(
+        project: str,
+        subscriber_kind: str,
+        subscriber_id: str,
+        channels: list[str],
+        match_kind: str = "*",
+        match_signal_name: str = "*",
+        match_min_severity: str = "info",
+    ) -> dict[str, Any]:
+        """Upsert a routing subscription. Gated by ``HFAO_MCP_READ_ONLY``."""
+        if deps.config.mcp_read_only:
+            raise AuthError("server is in read-only mode (HFAO_MCP_READ_ONLY=true)")
+        identity = authorize_project(control, project)
+        return control.upsert_subscription(
+            project_id=project,
+            subscriber_kind=subscriber_kind,
+            subscriber_id=subscriber_id,
+            channels=channels,
+            match_kind=match_kind,
+            match_signal_name=match_signal_name,
+            match_min_severity=match_min_severity,
+            created_by=identity.key_id,
+        )
+
     @mcp.resource("hfao://traces/{project}/{trace_id}")
     def trace_resource(project: str, trace_id: str) -> str:
         """Expose a trace as a readable JSON resource."""

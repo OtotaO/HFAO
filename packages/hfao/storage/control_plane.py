@@ -253,6 +253,28 @@ CREATE INDEX IF NOT EXISTS insights_by_project_time
     ON insights(project_id, observed_at);
 CREATE INDEX IF NOT EXISTS insights_by_signal
     ON insights(project_id, signal_name, kind, observed_at);
+
+-- §16 Q-19: rule-based subscriptions. Routing engine queries by
+-- (project_id, match_kind, match_signal_name) and prunes locally. v1 has
+-- no ML — see Q-19-next for the learning version.
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id                  TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    subscriber_kind     TEXT NOT NULL CHECK (subscriber_kind IN ('role','user','agent')),
+    subscriber_id       TEXT NOT NULL,
+    match_kind          TEXT NOT NULL DEFAULT '*',
+    match_signal_name   TEXT NOT NULL DEFAULT '*',
+    match_min_severity  TEXT NOT NULL DEFAULT 'info'
+                            CHECK (match_min_severity IN ('info','notice','warning','critical')),
+    channels            TEXT NOT NULL DEFAULT '[]',  -- JSON list[str]
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    created_at          TEXT NOT NULL,
+    created_by          TEXT,
+    UNIQUE (project_id, subscriber_kind, subscriber_id, match_kind, match_signal_name)
+);
+
+CREATE INDEX IF NOT EXISTS subscriptions_by_filter
+    ON subscriptions(project_id, match_kind, match_signal_name, enabled);
 """
 
 
@@ -1296,6 +1318,141 @@ class ControlPlane:
                 (project_id, signal_name, kind, observed_day),
             ).fetchone()
         return row is not None
+
+    # ---- subscriptions (§16 Q-19) ----
+
+    def upsert_subscription(
+        self,
+        *,
+        project_id: str,
+        subscriber_kind: str,
+        subscriber_id: str,
+        match_kind: str = "*",
+        match_signal_name: str = "*",
+        match_min_severity: str = "info",
+        channels: list[str] | None = None,
+        enabled: bool = True,
+        created_by: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a subscription. Unique on
+        ``(project, kind, id, match_kind, match_signal_name)``."""
+        if subscriber_kind not in ("role", "user", "agent"):
+            raise ValueError(f"invalid subscriber_kind: {subscriber_kind!r}")
+        if match_min_severity not in ("info", "notice", "warning", "critical"):
+            raise ValueError(f"invalid match_min_severity: {match_min_severity!r}")
+        sid = _new_id("sub")
+        with self._lock:
+            self._con.execute(
+                "INSERT INTO subscriptions (id, project_id, subscriber_kind, "
+                "subscriber_id, match_kind, match_signal_name, match_min_severity, "
+                "channels, enabled, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (project_id, subscriber_kind, subscriber_id, "
+                "match_kind, match_signal_name) DO UPDATE SET "
+                "match_min_severity = excluded.match_min_severity, "
+                "channels = excluded.channels, "
+                "enabled = excluded.enabled, "
+                "created_by = COALESCE(excluded.created_by, subscriptions.created_by)",
+                (
+                    sid,
+                    project_id,
+                    subscriber_kind,
+                    subscriber_id,
+                    match_kind,
+                    match_signal_name,
+                    match_min_severity,
+                    json.dumps(channels or []),
+                    1 if enabled else 0,
+                    _now(),
+                    created_by,
+                ),
+            )
+            row = self._con.execute(
+                "SELECT * FROM subscriptions WHERE project_id = ? "
+                "AND subscriber_kind = ? AND subscriber_id = ? "
+                "AND match_kind = ? AND match_signal_name = ?",
+                (
+                    project_id,
+                    subscriber_kind,
+                    subscriber_id,
+                    match_kind,
+                    match_signal_name,
+                ),
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def get_subscription(
+        self, *, project_id: str, subscription_id: str
+    ) -> dict[str, Any]:
+        with self._lock:
+            row = self._con.execute(
+                "SELECT * FROM subscriptions WHERE project_id = ? AND id = ?",
+                (project_id, subscription_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError((project_id, subscription_id))
+        return dict(row)
+
+    def list_subscriptions(
+        self,
+        *,
+        project_id: str,
+        only_enabled: bool = False,
+        match_kind: str | None = None,
+        match_signal_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM subscriptions WHERE project_id = ?"
+        params: list[Any] = [project_id]
+        if only_enabled:
+            sql += " AND enabled = 1"
+        if match_kind is not None:
+            sql += " AND (match_kind = '*' OR match_kind = ?)"
+            params.append(match_kind)
+        if match_signal_name is not None:
+            sql += (
+                " AND (match_signal_name = '*'"
+                " OR match_signal_name = ?"
+                " OR (match_signal_name LIKE '%*'"
+                "     AND ? LIKE replace(match_signal_name, '*', '%')))"
+            )
+            params.extend([match_signal_name, match_signal_name])
+        sql += " ORDER BY created_at"
+        with self._lock:
+            rows = self._con.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_subscription(
+        self, *, project_id: str, subscription_id: str
+    ) -> None:
+        with self._lock:
+            self._con.execute(
+                "DELETE FROM subscriptions WHERE project_id = ? AND id = ?",
+                (project_id, subscription_id),
+            )
+
+    def latest_audit_actor(
+        self,
+        *,
+        workspace_id: str,
+        action: str,
+        target_contains: str,
+    ) -> str | None:
+        """Return the actor of the most recent matching audit-log entry.
+
+        Backs the auto-resolved ``subscriber_id="auto:prompt_owner:<name>"``
+        path the routing engine uses: the latest ``create_prompt_version``
+        actor on a prompt is the default owner subscriber.
+        """
+        with self._lock:
+            row = self._con.execute(
+                "SELECT actor FROM audit_log "
+                "WHERE workspace_id = ? AND action = ? "
+                "AND target LIKE ? "
+                "ORDER BY at DESC LIMIT 1",
+                (workspace_id, action, f"%{target_contains}%"),
+            ).fetchone()
+        return row["actor"] if row else None
 
     # ---- audit log ----
 

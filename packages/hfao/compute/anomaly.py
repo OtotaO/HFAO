@@ -34,7 +34,7 @@ import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from hfao.schema.insights import (
     SEVERITY_RANK,
@@ -533,7 +533,12 @@ def _empty_probe_list() -> list[SignalProbe]:
 
 @dataclass
 class AnomalyEngine:
-    """Run all configured detectors against a project's signals, persist insights."""
+    """Run all configured detectors against a project's signals, persist insights.
+
+    Optionally fans persisted insights through an ``InsightRouter`` per
+    §16 Q-19. The router is opt-in so existing AC tests stay focused; tests
+    that exercise routing pass an explicit ``router`` instance.
+    """
 
     backend: StorageBackend
     control: ControlPlane
@@ -541,6 +546,8 @@ class AnomalyEngine:
     probes: list[SignalProbe] = field(default_factory=_empty_probe_list)
     replay_scanner: ReplayVerifiedScanner | None = None
     min_persist_severity: InsightSeverity = "info"
+    router: Any = None  # InsightRouter | None — typed Any to avoid an import cycle
+    workspace_id: str | None = None  # for `auto:prompt_owner:…` resolution
 
     def evaluate(self, *, project_id: str, now: datetime | None = None) -> list[dict[str, object]]:
         """Run one anomaly pass; persist anything at or above ``min_persist_severity``."""
@@ -638,6 +645,33 @@ class AnomalyEngine:
             trace_id=detection.trace_id,
             metadata=detection.metadata,
         )
+        if self.router is not None:
+            try:
+                self.router.route_insight(
+                    project_id=project_id,
+                    kind=detection.kind,
+                    signal_name=detection.signal_name,
+                    severity=detection.severity,
+                    payload={
+                        "insight_id": row.get("id"),
+                        "project_id": project_id,
+                        "kind": detection.kind,
+                        "signal_name": detection.signal_name,
+                        "severity": detection.severity,
+                        "summary": detection.summary,
+                        "baseline_value": detection.baseline_value,
+                        "current_value": detection.current_value,
+                        "confidence": detection.confidence,
+                        "observed_at": now.isoformat(),
+                    },
+                    workspace_id=self.workspace_id,
+                )
+            except Exception:  # noqa: BLE001 — routing never blocks persistence
+                log.exception(
+                    "AnomalyEngine: router failed on %s/%s",
+                    detection.signal_name,
+                    detection.kind,
+                )
         return [row]
 
 
