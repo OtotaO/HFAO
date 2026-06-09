@@ -7,9 +7,51 @@ discipline laid out in [SPEC §15.1](SPEC.md).
 
 ## [Unreleased]
 
-Nothing yet. Open §16 questions Q-18 (proactive anomaly surfacing), Q-19
-(insight routing intelligence), Q-20 (Stage 2 counterfactual replay reorder)
-are filed with proposed defaults, gated on human greenlight.
+Open §16 questions Q-18 (proactive anomaly surfacing), Q-19 (insight routing
+intelligence), Q-20 (Stage 2 counterfactual replay reorder) are filed with
+proposed defaults, gated on human greenlight. M3 deep-differentiation work —
+counterfactual replay (Stage 2), the Helm chart, and the marquee framework
+examples — is in progress and tracked against [SPEC §15](SPEC.md).
+
+## [1.0.0] — 2026-06-06 — Public release packaging
+
+First public, installable cut. This is a packaging-and-onboarding release on
+top of the M2 feature set: it makes `pip install hfao` and the closed
+eval-trace loop runnable by anyone, with no API keys and no cloud account.
+The M3 deep-differentiation items above remain in progress — this release does
+**not** claim them as done.
+
+**Test gate at v1.0.0:** 270 passed / 6 skipped on the non-acceptance suite
+(`uv run pytest -m "not acceptance"`); the skips are the ClickHouse
+testcontainer + optional Presidio paths.
+
+### Added
+
+- **`scripts/demo.sh`** — a one-command, asciinema-ready walkthrough of the
+  whole loop with **zero API keys**: `hfao migrate` → `hfao up` (boots the
+  Cockpit and waits for HTTP 200) → a sample agent emits OTel GenAI spans via
+  the in-process ingest path → `hfao query` prints the captured trace → a
+  golden dataset is seeded → `hfao eval run --gate` scores it and exits 0.
+  The "LM" is the built-in `echo` runtime (returns the input unchanged), so
+  the `exact_match` gate passes deterministically offline. Runs against an
+  isolated throwaway `$HFAO_DEMO_HOME` and tears the cockpit down on exit.
+- **`scripts/demo_seed_eval.py`** — idempotent seeder for the demo's
+  deterministic `goldens` dataset (`expected_output == input`). Inlines the
+  project/workspace bootstrap so it has no dependency on the non-packaged
+  `apps/` tree and runs from a bare `pip install hfao`.
+
+### Packaging
+
+- Confirmed `pyproject.toml` is publish-ready: distribution name `hfao`,
+  version `1.0.0`, runtime dependencies pinned to floors, the `hfao` console
+  script entry point, and the `presidio` / `dev` extras. The wheel ships
+  `packages/hfao` (the `apps/` cockpit tree stays a source-checkout concern,
+  as before).
+
+### Not in this release (owner credentials / irreversible)
+
+- No PyPI upload, no `git tag v1.0.0`, no Hugging Face Space deploy. Those
+  steps need the owner's publishing credentials; see the release runbook.
 
 ## [0.5.0] — 2026-06-02 — M2: Phase 1 feature parity + Experiment primitive
 

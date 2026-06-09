@@ -1,6 +1,6 @@
 [project]
 name = "hfao"
-version = "0.5.0"
+version = "1.0.0"
 description = "Hugging Face Agent Observatory"
 readme = "README.md"
 requires-python = ">=3.10"
