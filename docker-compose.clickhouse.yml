@@ -1,0 +1,96 @@
+# HFAO Docker shape (SPEC §6.1) — ClickHouse hot tier, Postgres control plane,
+# Redis Streams ingest buffer.
+#
+# Overlay on top of ``docker-compose.yml``:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.clickhouse.yml up
+#
+# Reconfigures the cockpit + ingest containers to talk to the external
+# services. The shared ``hfao-data`` volume from the base compose stays for
+# the body offload (§6.6) only.
+#
+# Defaults are dev-grade. For production:
+#   - replace clickhouse-server with ClickHouse Cloud (set HFAO_CLICKHOUSE_DSN)
+#   - replace postgres with managed Postgres (set HFAO_CONTROL_PLANE_DSN)
+#   - replace redis with a managed cluster (set HFAO_REDIS_URL)
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: hfao-clickhouse
+    ports:
+      - "9000:9000"   # native protocol
+      - "8123:8123"   # HTTP interface
+    environment:
+      CLICKHOUSE_DB: hfao
+      CLICKHOUSE_USER: hfao
+      CLICKHOUSE_PASSWORD: hfao
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hfao-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: hfao
+      POSTGRES_PASSWORD: hfao
+      POSTGRES_DB: hfao_control
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: hfao-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  # Reconfigure the cockpit container to use ClickHouse + Postgres + Redis.
+  cockpit:
+    environment:
+      HFAO_BACKEND: clickhouse
+      HFAO_CLICKHOUSE_DSN: clickhouse://hfao:hfao@clickhouse:9000/hfao
+      HFAO_CONTROL_PLANE_DSN: postgresql://hfao:hfao@postgres:5432/hfao_control
+      HFAO_REDIS_URL: redis://redis:6379/0
+      HFAO_BODIES_PATH: /data/bodies
+    depends_on:
+      clickhouse:
+        condition: service_started
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  ingest:
+    environment:
+      HFAO_BACKEND: clickhouse
+      HFAO_CLICKHOUSE_DSN: clickhouse://hfao:hfao@clickhouse:9000/hfao
+      HFAO_CONTROL_PLANE_DSN: postgresql://hfao:hfao@postgres:5432/hfao_control
+      HFAO_REDIS_URL: redis://redis:6379/0
+      HFAO_BODIES_PATH: /data/bodies
+    depends_on:
+      clickhouse:
+        condition: service_started
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+
+volumes:
+  clickhouse-data:
+    name: hfao-clickhouse-data
+  postgres-data:
+    name: hfao-postgres-data
+  redis-data:
+    name: hfao-redis-data

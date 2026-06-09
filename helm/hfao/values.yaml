@@ -1,0 +1,135 @@
+# Default values for the HFAO Helm chart (SPEC §6.1 Kubernetes shape).
+#
+# The chart ships two Deployments:
+#
+#   * cockpit  — Gradio cockpit (§10) on :7860 + MCP Streamable HTTP
+#                (§9) on :4319.
+#   * ingest   — Granian OTLP/HTTP (§5.1, §7.1) on :4318.
+#
+# Both wear the same external hot-tier + control-plane configuration
+# (ClickHouse + managed Postgres + optional Redis Streams buffer). To
+# point at ClickHouse Cloud, override the ``hot.clickhouseDsn`` value.
+
+# Identity overrides — defaults derive resource names from .Release.Name
+# + .Chart.Name. Set to override either piece.
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/f8n-ai/hfao-cockpit
+  tag: ""           # defaults to .Chart.appVersion at template time
+  pullPolicy: IfNotPresent
+imageIngest:
+  repository: ghcr.io/f8n-ai/hfao-ingest
+  tag: ""
+
+imagePullSecrets: []
+
+# --- HFAO config (SPEC Appendix A) -----------------------------------------
+
+project: default
+environment: production
+judge:
+  provider: anthropic
+  model: claude-haiku-4-5
+
+# Hot tier — clickhouse for the K8s shape per §6.1. Override the DSN to
+# point at ClickHouse Cloud / Operator-managed ClickHouse.
+hot:
+  backend: clickhouse
+  clickhouseDsn: ""   # e.g. clickhouse://user:pass@clickhouse:9000/hfao
+
+# Control plane DSN — managed Postgres is the v1 recommendation.
+control:
+  dsn: ""             # e.g. postgresql://hfao:hfao@postgres:5432/hfao_control
+
+# Ingest buffer — Redis Streams for the K8s shape.
+redis:
+  url: ""             # e.g. redis://redis:6379/0
+
+# Body offload (§6.6) — S3 / R2 / HF Buckets URI prefix.
+bodies:
+  path: ""            # e.g. s3://hfao-bodies/
+
+# Warm tier (§6.3) — DuckLake-backed HF Bucket.
+hfBucket: ""          # e.g. f8n-ai/hfao-warm
+
+# Optional generic OIDC (§13.3).
+oidc:
+  issuerUrl: ""
+  clientId: ""
+  clientSecretRef: "" # K8s Secret name. Key: oidc-client-secret.
+
+mcp:
+  readOnly: false
+
+# --- Cockpit -------------------------------------------------------------
+
+cockpit:
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    httpPort: 7860
+    mcpPort: 4319
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# --- Ingest --------------------------------------------------------------
+
+ingest:
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 4318
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 2
+      memory: 2Gi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# --- Ingress (optional) --------------------------------------------------
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: hfao.example.com
+      paths:
+        - path: /            # cockpit
+          service: cockpit
+          port: 7860
+        - path: /mcp         # MCP Streamable HTTP
+          service: cockpit
+          port: 4319
+        - path: /v1/traces   # OTLP/HTTP
+          service: ingest
+          port: 4318
+  tls: []
+
+# --- API-key secret ------------------------------------------------------
+# Optionally inject ANTHROPIC_API_KEY / OPENAI_API_KEY / HF_TOKEN from a
+# pre-existing K8s Secret. Leave empty to wire your own env injection.
+apiKeysSecretRef: ""
+
+# --- Service account -----------------------------------------------------
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

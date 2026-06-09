@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hfao.fullname" . }}-cockpit
+  labels:
+    {{- include "hfao.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cockpit
+spec:
+  replicas: {{ .Values.cockpit.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "hfao.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: cockpit
+  template:
+    metadata:
+      {{- with .Values.cockpit.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "hfao.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: cockpit
+    spec:
+      serviceAccountName: {{ include "hfao.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cockpit
+          image: "{{ .Values.image.repository }}:{{ include "hfao.imageTag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 7860
+              protocol: TCP
+            - name: mcp
+              containerPort: 4319
+              protocol: TCP
+          env:
+            {{- include "hfao.envCommon" . | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.cockpit.resources | nindent 12 }}
+      {{- with .Values.cockpit.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cockpit.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cockpit.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

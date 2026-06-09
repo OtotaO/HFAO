@@ -1,0 +1,24 @@
+apiVersion: v2
+name: hfao
+description: |
+  Hugging Face Agent Observatory — open-source, standards-native agent
+  observability backend. OpenTelemetry GenAI + OpenInference on ingest,
+  MCP-native query surface, closed eval-trace loop.
+type: application
+version: 0.5.0
+appVersion: "0.5.0"
+keywords:
+  - observability
+  - opentelemetry
+  - openinference
+  - mcp
+  - llm
+  - agents
+  - tracing
+home: https://github.com/f8n-ai/hfao
+sources:
+  - https://github.com/f8n-ai/hfao
+maintainers:
+  - name: HFAO
+    url: https://github.com/f8n-ai/hfao
+icon: https://raw.githubusercontent.com/f8n-ai/hfao/main/docs/hfao-cli.png
