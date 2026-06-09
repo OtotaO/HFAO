@@ -37,7 +37,7 @@ from hfao.schema.events import CostBreakdown, Observation, TokenUsage
 from hfao.storage.control_plane import ControlPlane
 from hfao.storage.duckdb_backend import DuckDBBackend
 
-_NOW = datetime(2026, 5, 31, 12, 0, 0, tzinfo=timezone.utc)
+_NOW = datetime.now(timezone.utc).replace(microsecond=0)
 
 
 def _obs(
