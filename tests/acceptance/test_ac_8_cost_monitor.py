@@ -50,8 +50,16 @@ def _obs(
     status: str = "ok",
     start_offset_ms: int = 0,
     duration_ms: int = 50,
+    base_time: datetime = _NOW,
 ) -> Observation:
-    start = _NOW + timedelta(milliseconds=start_offset_ms)
+    # ``base_time`` defaults to the fixed ``_NOW`` so the deterministic cost
+    # tests (which assert against an explicit ``_NOW``-relative date range) are
+    # unchanged. Tests that exercise the monitor engine's wall-clock window
+    # (``now() - INTERVAL …``) must pass a recent ``base_time`` so the seeded
+    # events fall inside the window regardless of the calendar date the suite
+    # runs on — otherwise the test silently time-bombs once real ``now()``
+    # drifts past the window from the fixed ``_NOW``.
+    start = base_time + timedelta(milliseconds=start_offset_ms)
     return Observation(
         project_id="p1",
         trace_id=f"t-{obs_id}",
@@ -99,8 +107,11 @@ def test_cost_rollup_pivot_by_user_and_model(backend: DuckDBBackend) -> None:
             _obs(obs_id="o1", user_id="alice", model="gpt-4o", cost=0.02, tokens=200),
             _obs(obs_id="o2", user_id="alice", model="gpt-4o", cost=0.03, tokens=300),
             _obs(
-                obs_id="o3", user_id="alice", model="claude-haiku-4-5",
-                cost=0.01, tokens=100,
+                obs_id="o3",
+                user_id="alice",
+                model="claude-haiku-4-5",
+                cost=0.01,
+                tokens=100,
             ),
             _obs(obs_id="o4", user_id="bob", model="gpt-4o", cost=0.04, tokens=400),
         ]
@@ -197,9 +208,7 @@ def test_parse_window_seconds() -> None:
 
 
 def test_monitor_invalid_window_falls_back() -> None:
-    sql = KeywordTemplateGenerator().generate(
-        description="error rate", window="garbage"
-    ).sql
+    sql = KeywordTemplateGenerator().generate(description="error rate", window="garbage").sql
     assert "1 HOUR" in sql  # safe default
 
 
@@ -211,9 +220,7 @@ def test_monitor_invalid_window_falls_back() -> None:
 @pytest.fixture
 def seeded_project(control: ControlPlane) -> str:
     ws = control.create_workspace(slug="acme", name="Acme")
-    control.create_project_with_id(
-        project_id="p1", workspace_id=ws["id"], slug="p1", name="p1"
-    )
+    control.create_project_with_id(project_id="p1", workspace_id=ws["id"], slug="p1", name="p1")
     return "p1"
 
 
@@ -237,15 +244,30 @@ def test_monitor_fires_on_threshold(
     seeded_project: str,
 ) -> None:
     """§8.5 line: a threshold breach triggers an alert + webhook delivery."""
-    # Seed two error events and three ok events → error_rate = 0.4
+    # Seed two error events and three ok events → error_rate = 0.4.
+    # Anchor to a recent time so they fall inside the monitor's wall-clock
+    # "7d" window (engine uses SQL now()), independent of the run date.
+    recent = datetime.now(timezone.utc) - timedelta(hours=1)
     obs_seq: list[Observation] = []
     for i in range(2):
         obs_seq.append(
-            _obs(obs_id=f"err{i}", status="error", start_offset_ms=i, cost=0.01)
+            _obs(
+                obs_id=f"err{i}",
+                status="error",
+                start_offset_ms=i,
+                cost=0.01,
+                base_time=recent,
+            )
         )
     for i in range(3):
         obs_seq.append(
-            _obs(obs_id=f"ok{i}", status="ok", start_offset_ms=10 + i, cost=0.01)
+            _obs(
+                obs_id=f"ok{i}",
+                status="ok",
+                start_offset_ms=10 + i,
+                cost=0.01,
+                base_time=recent,
+            )
         )
     backend.write_events(obs_seq)
 
@@ -284,9 +306,7 @@ def test_monitor_does_not_fire_when_below_threshold(
     backend: DuckDBBackend, control: ControlPlane, seeded_project: str
 ) -> None:
     """When the value stays under threshold, no alert + no webhook call."""
-    backend.write_events(
-        [_obs(obs_id=f"o{i}", status="ok", start_offset_ms=i) for i in range(4)]
-    )
+    backend.write_events([_obs(obs_id=f"o{i}", status="ok", start_offset_ms=i) for i in range(4)])
     monitor = create_monitor(
         control,
         project_id=seeded_project,
@@ -310,10 +330,12 @@ def test_monitor_records_delivery_errors(
     backend: DuckDBBackend, control: ControlPlane, seeded_project: str
 ) -> None:
     """A breach with a failing channel records the error but still persists alert."""
+    # Recent base_time so events fall inside the monitor's wall-clock window.
+    recent = datetime.now(timezone.utc) - timedelta(hours=1)
     backend.write_events(
         [
-            _obs(obs_id="e1", status="error"),
-            _obs(obs_id="e2", status="error", start_offset_ms=1),
+            _obs(obs_id="e1", status="error", base_time=recent),
+            _obs(obs_id="e2", status="error", start_offset_ms=1, base_time=recent),
         ]
     )
     monitor = create_monitor(
@@ -347,8 +369,7 @@ def test_monitor_evaluate_all_enabled(
 ) -> None:
     """Disabled monitors are skipped; enabled ones run."""
     backend.write_events(
-        [_obs(obs_id="e1", status="error"), _obs(obs_id="e2", status="error",
-                                                 start_offset_ms=1)]
+        [_obs(obs_id="e1", status="error"), _obs(obs_id="e2", status="error", start_offset_ms=1)]
     )
     create_monitor(
         control,
@@ -368,18 +389,14 @@ def test_monitor_evaluate_all_enabled(
         operator="gt",
         window="7d",
     )
-    control.set_monitor_enabled(
-        project_id=seeded_project, monitor_id=disabled["id"], enabled=False
-    )
+    control.set_monitor_enabled(project_id=seeded_project, monitor_id=disabled["id"], enabled=False)
     engine = MonitorEngine(backend, control, webhook=CapturingWebhook())
     results = engine.evaluate_all_enabled(project_id=seeded_project)
     assert len(results) == 1
     assert results[0].monitor_id != disabled["id"]
 
 
-def test_monitor_create_persists_frozen_sql(
-    control: ControlPlane, seeded_project: str
-) -> None:
+def test_monitor_create_persists_frozen_sql(control: ControlPlane, seeded_project: str) -> None:
     """The SQL on the persisted monitor row matches the generator's output."""
     monitor = create_monitor(
         control,
@@ -391,18 +408,12 @@ def test_monitor_create_persists_frozen_sql(
         window="1h",
     )
     # Persisted SQL matches the keyword template.
-    persisted = control.get_monitor(
-        project_id=seeded_project, monitor_id=monitor["id"]
-    )
-    expected = KeywordTemplateGenerator().generate(
-        description="error rate", window="1h"
-    ).sql
+    persisted = control.get_monitor(project_id=seeded_project, monitor_id=monitor["id"])
+    expected = KeywordTemplateGenerator().generate(description="error rate", window="1h").sql
     assert persisted["sql_query"] == expected
 
 
-def test_monitor_rejects_invalid_operator(
-    control: ControlPlane, seeded_project: str
-) -> None:
+def test_monitor_rejects_invalid_operator(control: ControlPlane, seeded_project: str) -> None:
     with pytest.raises(ValueError, match="invalid operator"):
         create_monitor(
             control,
@@ -430,7 +441,5 @@ def test_monitor_engine_marks_last_evaluated(
     )
     engine = MonitorEngine(backend, control, webhook=CapturingWebhook())
     engine.evaluate(monitor)
-    refreshed = control.get_monitor(
-        project_id=seeded_project, monitor_id=monitor["id"]
-    )
+    refreshed = control.get_monitor(project_id=seeded_project, monitor_id=monitor["id"])
     assert refreshed["last_evaluated_at"] is not None
