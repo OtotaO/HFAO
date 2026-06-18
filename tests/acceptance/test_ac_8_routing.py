@@ -569,9 +569,15 @@ def test_matching_subscriptions_dry_run_helper(
 
 
 def _obs(
-    *, obs_id: str, status: str = "ok", cost: float = 0.01
+    *, obs_id: str, status: str = "ok", cost: float = 0.01, base_time: datetime = _NOW
 ) -> Observation:
-    now = _NOW - timedelta(hours=1)
+    # ``base_time`` defaults to the fixed ``_NOW`` so the deterministic tests
+    # (which assert against an explicit ``_NOW``-relative date range) keep their
+    # behaviour. Tests that exercise a monitor with a wall-clock window
+    # (``now() - INTERVAL …``) must pass a recent ``base_time`` so the seeded
+    # events fall inside the window as real ``now()`` advances — otherwise the
+    # event timestamps drift past the window from the fixed ``_NOW`` (time-bomb).
+    now = base_time - timedelta(hours=1)
     return Observation(
         project_id="p1",
         trace_id=f"t-{obs_id}",
@@ -694,12 +700,15 @@ def test_monitor_engine_routes_alert_on_breach(
         match_signal_name="*",
         match_min_severity="info",
     )
-    # Two error events + one ok → error rate breach.
+    # Two error events + one ok → error rate breach. The monitor below uses a
+    # wall-clock "7d" window, so anchor the seeded events to a recent base_time
+    # (not the fixed _NOW, which drifts out of the window as real now() moves).
+    recent = datetime.now(timezone.utc)
     backend.write_events(
         [
-            _obs(obs_id="e1", status="error"),
-            _obs(obs_id="e2", status="error"),
-            _obs(obs_id="ok1", status="ok"),
+            _obs(obs_id="e1", status="error", base_time=recent),
+            _obs(obs_id="e2", status="error", base_time=recent),
+            _obs(obs_id="ok1", status="ok", base_time=recent),
         ]
     )
     monitor = create_monitor(
