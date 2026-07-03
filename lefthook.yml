@@ -1,0 +1,14 @@
+# BILLING-IMMUNE LOCAL CI GATE — mirrors .github/workflows (uv sync + tests).
+# GitHub Actions is billing-blocked account-wide; these hooks run the same gate
+# locally at git time (zero CI minutes). Activate once: `lefthook install`.
+# Requires: uv on PATH + `make sync` run. Bypass: --no-verify (sparingly).
+pre-commit:
+  parallel: false
+  commands:
+    lint:
+      run: make lint
+pre-push:
+  parallel: false
+  commands:
+    full-gate:
+      run: make lint && make typecheck && make test
