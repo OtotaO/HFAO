@@ -17,13 +17,11 @@ hfao.init(project="my-agent")   # one line; auto-detects installed instrumentati
 
 ## The three pillars
 
-Commercial agent-observability vendors (LangSmith, Langfuse, Phoenix, Braintrust, Weave, Helicone) all do tracing + datasets + evals + monitoring. HFAO matches them on every line item. The reason to use HFAO is **three things they cannot easily copy** (see [SPEC §1.1](SPEC.md), Q-9 resolution):
+Commercial agent-observability vendors (LangSmith, Langfuse, Phoenix, Braintrust, Weave, Helicone) cover tracing, datasets, evals and monitoring. HFAO aims to cover the same ground; it has not been benchmarked against them. What is different by construction is standards-native ingest, an MCP query surface, and a single-schema eval-trace loop. The reason to use HFAO is **three things they cannot easily copy** (see [SPEC §1.1](SPEC.md), Q-9 resolution):
 
 ### 1. Standards-nativeness done right
 
 Every span HFAO ingests speaks **OpenTelemetry GenAI** ([experimental semconv](https://opentelemetry.io/docs/specs/semconv/gen-ai/)) and/or **OpenInference**. No proprietary wire format. No SDK lock-in. If your agent is already emitting OTLP, you're already done — point the OTLP exporter at `http://localhost:4318/v1/traces` and HFAO normalizes both attribute namespaces into a canonical schema at ingest.
-
-Commercial vendors hedge on this because true standards-nativeness commoditizes their backend. HFAO has no reason to hedge.
 
 ### 2. MCP-native queryability
 
@@ -76,6 +74,8 @@ One codebase. Three shapes per [SPEC §6.1](SPEC.md):
 
 ## Quickstart
 
+> **Current state:** not yet published to PyPI. Install from source: `git clone https://github.com/OtotaO/HFAO.git && cd HFAO && uv sync`. The `pip install hfao` path below works once the PyPI publish lands.
+
 ```bash
 pip install hfao              # or `uv pip install hfao`
 hfao up                        # → cockpit at :7860, OTLP at :4318, MCP at :4319/mcp
@@ -93,7 +93,7 @@ hfao.init(project="my-agent")
 # already installed for your framework.
 ```
 
-The cockpit shows the trace within 2 seconds. The MCP server lets Claude/Cursor query it.
+Traces typically appear in the cockpit within a couple of seconds (SPEC §7.2 sets a 2s max batch age). End-to-end latency has not been benchmarked. The MCP server lets Claude/Cursor query it.
 
 ### CI integration
 
@@ -162,13 +162,15 @@ Storage is **protocol-abstracted** ([§6.2](SPEC.md)): every backend implements 
 
 ## Status
 
-This repository is built against [SPEC.md](SPEC.md) v1.0.0. Implementation is on schedule:
+This repository is built against [SPEC.md](SPEC.md) v1.0.0:
 
-| Milestone | Tag | What's done |
+| Milestone | Milestone target | What's done |
 |---|---|---|
 | **M1 — Walking skeleton** | `v0.1.0` | ✅ OTLP ingest, DuckDB hot tier, cockpit, MCP `list_traces`/`get_trace`, single-binary deploy |
 | **M2 — Phase 1 feature parity + Experiment primitive** | `v0.5.0` | ✅ Causal attribution · eval engine · cost rollups · monitors · retention · Parquet export · experiment runner with paired statistics. The closed eval-trace loop is operational end-to-end. |
 | **M3 — Phase 2 differentiation** | `v1.0.0` | ⏳ Counterfactual replay (Stage 2), Helm chart, marquee examples |
+
+✅ = implemented on `main`. No version has been tagged, released or published yet.
 
 The [§16 Open Questions](SPEC.md) ledger is the source of truth for every deviation from the original plan. Treat that file as the audit trail for "why does v1 look like this?"
 
