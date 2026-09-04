@@ -17,7 +17,7 @@ hfao.init(project="my-agent")   # one line; auto-detects installed instrumentati
 
 ## The three pillars
 
-Commercial agent-observability vendors (LangSmith, Langfuse, Phoenix, Braintrust, Weave, Helicone) cover tracing, datasets, evals and monitoring. HFAO aims to cover the same ground; it has not been benchmarked against them. What is different by construction is standards-native ingest, an MCP query surface, and a single-schema eval-trace loop. The reason to use HFAO is **three things they cannot easily copy** (see [SPEC §1.1](SPEC.md), Q-9 resolution):
+Commercial agent-observability vendors (LangSmith, Langfuse, Phoenix, Braintrust, Weave, Helicone) cover tracing, datasets, evals and monitoring. HFAO aims to cover the same ground; it has not been benchmarked against them. What is different by construction is standards-native ingest, an MCP query surface, and a single-schema eval-trace loop. The three design choices below are what differentiate it (see [SPEC §1.1](SPEC.md), Q-9 resolution):
 
 ### 1. Standards-nativeness done right
 
