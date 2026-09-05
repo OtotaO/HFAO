@@ -8,6 +8,12 @@ observation mapping kicks in.
 
 ## Install
 
+> **`hfao` is not on PyPI yet.** Install HFAO from source:
+> `git clone https://github.com/OtotaO/HFAO.git && cd HFAO && uv sync`,
+> then install this quickstart's other packages, which are on PyPI today:
+> `pip install openai-agents openinference-instrumentation-openai-agents`.
+> The single command below works once the HFAO publish lands.
+
 ```bash
 pip install hfao openai-agents openinference-instrumentation-openai-agents
 ```

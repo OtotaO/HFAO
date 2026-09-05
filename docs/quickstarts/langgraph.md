@@ -7,6 +7,12 @@ LangGraph emits spans via LangChain callbacks. HFAO auto-picks them up through
 
 ## Install
 
+> **`hfao` is not on PyPI yet.** Install HFAO from source:
+> `git clone https://github.com/OtotaO/HFAO.git && cd HFAO && uv sync`,
+> then install this quickstart's other packages, which are on PyPI today:
+> `pip install langgraph openinference-instrumentation-langchain`.
+> The single command below works once the HFAO publish lands.
+
 ```bash
 pip install hfao langgraph openinference-instrumentation-langchain
 ```

@@ -11,6 +11,12 @@ For all other smolagents span types (agent / step / LLM / tool),
 
 ## Install
 
+> **`hfao` is not on PyPI yet.** Install HFAO from source:
+> `git clone https://github.com/OtotaO/HFAO.git && cd HFAO && uv sync`,
+> then install this quickstart's other packages, which are on PyPI today:
+> `pip install smolagents openinference-instrumentation-smolagents`.
+> The single command below works once the HFAO publish lands.
+
 ```bash
 pip install hfao smolagents openinference-instrumentation-smolagents
 ```

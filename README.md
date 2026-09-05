@@ -66,7 +66,7 @@ One codebase. Three shapes per [SPEC §6.1](SPEC.md):
 
 | Shape | Hot tier | Control plane | Warm tier |
 |---|---|---|---|
-| **Single-file (HF Space)** — `pip install hfao && hfao up` | DuckDB embedded | SQLite | optional HF Buckets via DuckLake |
+| **Single-file (HF Space)** — `pip install hfao && hfao up` ([not yet on PyPI](#quickstart)) | DuckDB embedded | SQLite | optional HF Buckets via DuckLake |
 | **Docker Compose** — `docker compose up` | ClickHouse | Postgres | HF Buckets via DuckLake |
 | **Kubernetes** (Helm chart) | ClickHouse Cloud | managed Postgres | HF Buckets / S3 / R2 |
 
