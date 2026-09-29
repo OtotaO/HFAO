@@ -425,6 +425,49 @@ def test_router_dispatches_agent_kind_via_agent_dispatcher(
     agent_id, payload = agent.calls[0]
     assert agent_id == "agent:on-call-bot"
     assert payload["summary"] == "spike"
+    assert res.agent_failures == []
+
+
+def test_router_reports_unconfigured_agent_without_blocking_webhooks(
+    control: ControlPlane,
+    workspace_project: tuple[str, str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _, project = workspace_project
+    agent_sub = control.upsert_subscription(
+        project_id=project,
+        subscriber_kind="agent",
+        subscriber_id="agent:on-call-bot",
+        channels=[],
+    )
+    control.upsert_subscription(
+        project_id=project,
+        subscriber_kind="user",
+        subscriber_id="user:on-call@example.com",
+        channels=["https://hook.example/alerts"],
+    )
+    webhook = CapturingWebhook()
+    payload = {"summary": "private diagnostic details"}
+    res = InsightRouter(control=control, webhook=webhook).route_insight(
+        project_id=project,
+        kind="trend_shift",
+        signal_name="error_rate_per_hour",
+        severity="warning",
+        payload=payload,
+    )
+    # Matched subscriptions stay visible, but matching is not proof of delivery.
+    assert {delivery.subscriber_id for delivery in res.deliveries} == {
+        "agent:on-call-bot",
+        "user:on-call@example.com",
+    }
+    assert len(res.agent_failures) == 1
+    assert res.agent_failures[0].startswith(f"{agent_sub['id']}:agent:on-call-bot:")
+    assert "not configured" in res.agent_failures[0]
+    assert webhook.calls == [("https://hook.example/alerts", payload)]
+    assert res.webhook_failures == []
+    # Engine callers may ignore RouteResult; the missing transport remains visible.
+    assert "not configured" in caplog.text
+    assert payload["summary"] not in caplog.text
 
 
 def test_router_records_failures_without_aborting(
@@ -751,10 +794,12 @@ def test_routeresult_default_collections_isolated() -> None:
     assert r2.deliveries == []
 
 
-def test_no_op_agent_dispatcher_returns_success() -> None:
+def test_no_op_agent_dispatcher_reports_delivery_not_attempted() -> None:
     ok, err = NoOpAgentDispatcher().dispatch(agent_id="agent:x", payload={"k": "v"})
-    assert ok is True
-    assert err is None
+    assert ok is False
+    assert err is not None
+    assert "not configured" in err
+    assert "not attempted" in err
 
 
 def test_severity_rank_ordering_invariant() -> None:
