@@ -50,7 +50,7 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Delivery:
-    """One subscription's worth of routing output."""
+    """One matched subscription; this record does not confirm delivery."""
 
     subscription_id: str
     subscriber_kind: str
@@ -76,9 +76,9 @@ class RouteResult:
 class AgentDispatcher(Protocol):
     """Sends a routed insight payload to a non-human consumer.
 
-    The default implementation in v1 is a no-op (records the delivery in
-    the audit log). Production wires this to e.g. an MCP push, a queue
-    write, or an internal RPC.
+    The default implementation does not send and reports an unconfigured
+    dispatcher failure. Production wires this to e.g. an MCP push, a
+    queue write, or an internal RPC.
     """
 
     def dispatch(
@@ -87,17 +87,18 @@ class AgentDispatcher(Protocol):
 
 
 class NoOpAgentDispatcher:
-    """Default dispatcher: records but doesn't actually send.
+    """Default dispatcher: no transport configured, so nothing is sent.
 
-    Useful for development and the AC test harness. Returns ``(True, None)``
-    for every call so the routing engine treats the delivery as successful.
+    Return a failure so callers cannot mistake a matched subscription for
+    a delivered notification. Inject an AgentDispatcher to enable sending.
     """
 
     def dispatch(
         self, *, agent_id: str, payload: dict[str, Any]
     ) -> tuple[bool, str | None]:
-        log.debug("NoOpAgentDispatcher: agent=%s payload=%r", agent_id, payload)
-        return True, None
+        error = "agent dispatcher is not configured; delivery not attempted"
+        log.warning("%s: %s", agent_id, error)
+        return False, error
 
 
 # --------------------------------------------------------------------------- #
@@ -188,9 +189,9 @@ class InsightRouter:
 
     ``webhook`` is the existing :class:`hfao.compute.monitor.WebhookFn`
     pattern (already used for monitor alerts), and ``agent_dispatcher``
-    handles the non-human path. Both default to in-test-friendly
-    no-ops via :class:`NoOpAgentDispatcher` and the
-    :mod:`hfao.compute.monitor.http_webhook` import-on-use pattern.
+    handles the non-human path. Webhooks default to the real HTTP sender
+    imported on use. The default :class:`NoOpAgentDispatcher` reports an
+    unconfigured delivery failure until a transport is injected.
     """
 
     control: ControlPlane
