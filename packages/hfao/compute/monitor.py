@@ -252,13 +252,17 @@ WebhookFn = Callable[[str, dict[str, Any]], tuple[bool, str | None]]
 
 
 def http_webhook(url: str, payload: dict[str, Any]) -> tuple[bool, str | None]:
-    """POST ``payload`` as JSON to ``url``. Returns ``(ok, error_message)``."""
+    """POST JSON once; report 2xx success or a bounded, body-free error.
+
+    Redirects are delivery failures. Response bodies and HTTP exception text
+    are untrusted and must not be copied into persisted alert errors.
+    """
     try:
-        resp = httpx.post(url, json=payload, timeout=5.0)
-    except httpx.HTTPError as exc:
-        return False, str(exc)
-    if resp.status_code >= 400:
-        return False, f"HTTP {resp.status_code}: {resp.text[:120]}"
+        resp = httpx.post(url, json=payload, timeout=5.0, follow_redirects=False)
+    except (httpx.HTTPError, httpx.InvalidURL):
+        return False, "HTTP request failed"
+    if not 200 <= resp.status_code < 300:
+        return False, f"HTTP {resp.status_code}"
     return True, None
 
 
