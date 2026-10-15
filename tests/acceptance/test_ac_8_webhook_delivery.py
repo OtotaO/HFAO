@@ -7,9 +7,11 @@ establish destination safety: monitor records still include configured URLs.
 from __future__ import annotations
 
 import json
+import socket
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
+from typing import NoReturn
 from unittest.mock import Mock
 
 import httpx
@@ -21,6 +23,7 @@ from hfao.storage.duckdb_backend import DuckDBBackend
 
 _URL = "https://alerts.invalid/hook"
 _MALFORMED_URL = "http://[::1"
+_OVERLONG_HOST_URL = "http://" + "a" * 64 + ".example/hook"
 _REMOTE_SECRET = "remote-response-secret-that-must-not-be-recorded"
 _EXCEPTION_SECRET = "exception-secret-that-must-not-be-recorded"
 
@@ -38,6 +41,28 @@ def _install_transport(
     )
     monkeypatch.setattr(httpx._api, "Client", factory)
     return factory
+
+
+def _install_idna_failure(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Reach the real HTTPX/httpcore socket path with DNS and sockets blocked."""
+    def resolve(host: str, *args: object, **kwargs: object) -> NoReturn:
+        # Python's socket resolver uses this codec before resolving a hostname.
+        # Reproduce its failure without ever invoking the system DNS resolver.
+        host.encode("idna")
+        raise AssertionError("Expected an invalid IDNA hostname")
+
+    resolver = Mock(side_effect=resolve)
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+    monkeypatch.setattr(
+        socket.socket, "connect", Mock(side_effect=AssertionError("Network forbidden")),
+    )
+    # Explicit real transport bypasses environment proxy discovery in the test
+    # client, so the malformed destination reaches httpcore's socket backend.
+    monkeypatch.setattr(
+        httpx._api, "Client",
+        Mock(side_effect=partial(httpx.Client, transport=httpx.HTTPTransport())),
+    )
+    return resolver
 
 
 @pytest.mark.parametrize("status", [200, 201, 202, 204, 299])
@@ -140,12 +165,27 @@ def test_webhook_malformed_url_fails_before_transport(
     assert requests == []
 
 
-@pytest.mark.parametrize("outcome", ["response", "transport", "redirect", "invalid_url", "success"])
+@pytest.mark.parametrize("url", [_OVERLONG_HOST_URL, "http://a..example/hook"])
+def test_webhook_hostname_encoding_failure_is_reported(
+    monkeypatch: pytest.MonkeyPatch, url: str,
+) -> None:
+    resolver = _install_idna_failure(monkeypatch)
+
+    assert http_webhook(url, {"event": "alert"}) == (
+        False, "HTTP request failed",
+    )
+    resolver.assert_called_once()
+    assert resolver.call_args.args[0] == httpx.URL(url).host
+
+
+@pytest.mark.parametrize(
+    "outcome", ["response", "transport", "redirect", "invalid_url", "idna", "success"],
+)
 def test_monitor_persists_webhook_outcome(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outcome: str,
 ) -> None:
     requests: list[httpx.Request] = []
-    url = _MALFORMED_URL if outcome == "invalid_url" else _URL
+    url = {"invalid_url": _MALFORMED_URL, "idna": _OVERLONG_HOST_URL}.get(outcome, _URL)
 
     def respond(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -160,7 +200,11 @@ def test_monitor_persists_webhook_outcome(
             return httpx.Response(204)
         return httpx.Response(503, text=_REMOTE_SECRET)
 
-    _install_transport(monkeypatch, respond)
+    resolver = None
+    if outcome == "idna":
+        resolver = _install_idna_failure(monkeypatch)
+    else:
+        _install_transport(monkeypatch, respond)
     backend = DuckDBBackend(str(tmp_path / "hfao.duckdb"))
     control = ControlPlane(f"sqlite:///{tmp_path / 'control.db'}")
     try:
@@ -189,6 +233,7 @@ def test_monitor_persists_webhook_outcome(
             "transport": "HTTP request failed",
             "redirect": "HTTP 302",
             "invalid_url": "HTTP request failed",
+            "idna": "HTTP request failed",
         }.get(outcome)
         expected_errors = [f"{url}: {error_message}"] if error_message is not None else []
         # Existing behavior retains the configured destination in stored errors;
@@ -196,7 +241,9 @@ def test_monitor_persists_webhook_outcome(
         assert json.loads(rows[0]["delivery_errors"]) == expected_errors
         assert _REMOTE_SECRET not in rows[0]["delivery_errors"]
         assert _EXCEPTION_SECRET not in rows[0]["delivery_errors"]
-        assert len(requests) == (0 if outcome == "invalid_url" else 1)
+        assert len(requests) == (0 if outcome in {"invalid_url", "idna"} else 1)
+        if resolver is not None:
+            resolver.assert_called_once()
     finally:
         control.close()
         backend.close()

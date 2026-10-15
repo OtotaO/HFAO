@@ -259,7 +259,9 @@ def http_webhook(url: str, payload: dict[str, Any]) -> tuple[bool, str | None]:
     """
     try:
         resp = httpx.post(url, json=payload, timeout=5.0, follow_redirects=False)
-    except (httpx.HTTPError, httpx.InvalidURL):
+    except (httpx.HTTPError, httpx.InvalidURL, UnicodeError):
+        # Malformed ASCII host labels can fail IDNA encoding in the socket
+        # resolver without being wrapped in an HTTPX exception.
         return False, "HTTP request failed"
     if not 200 <= resp.status_code < 300:
         return False, f"HTTP {resp.status_code}"
